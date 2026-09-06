@@ -1,28 +1,5 @@
 import Foundation
 
-/// A persisted SSH connection. Secrets are never stored here: the password (if
-/// saved) lives in the Keychain keyed by `id`; private keys are referenced by
-/// `keyIDs` and managed by KeyStore.
-struct SavedConnection: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var name: String = ""
-    var host: String = ""
-    var port: Int = 22
-    var username: String = ""
-    /// Private keys (from KeyStore) this connection will try, in order.
-    var keyIDs: [UUID] = []
-    /// Whether a password is saved in the Keychain for this connection.
-    var savePassword: Bool = false
-
-    var title: String { name.isEmpty ? "\(username)@\(host)" : name }
-
-    var subtitle: String {
-        let hostPart = port == 22 ? "\(username)@\(host)" : "\(username)@\(host):\(port)"
-        if keyIDs.isEmpty { return hostPart }
-        return "\(hostPart) · \(keyIDs.count) key\(keyIDs.count == 1 ? "" : "s")"
-    }
-}
-
 /// Stores saved connections (metadata in UserDefaults, password in Keychain).
 final class ConnectionStore: ObservableObject {
     @Published private(set) var connections: [SavedConnection] = []

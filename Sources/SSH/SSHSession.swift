@@ -3,22 +3,6 @@ import NIOCore
 import NIOPosix
 import NIOSSH
 
-/// Connection parameters for an SSH session.
-struct SSHConnection: Identifiable {
-    var id = UUID()
-    var host: String
-    var port: Int = 22
-    var username: String
-    var password: String = ""
-    /// PEM/OpenSSH private key texts to try for public-key auth, in order.
-    var privateKeys: [String] = []
-    var term: String = "xterm-256color"
-    /// The owning `SavedConnection.id`, if this runtime connection came from a
-    /// saved host. Not persisted; rides along so the UI can resolve persisted
-    /// port forwards for this connection.
-    var savedID: UUID? = nil
-}
-
 /// Drives an interactive SSH shell over a PTY using swift-nio-ssh and feeds it
 /// into a TerminalSurfaceView. It is the surface's delegate: user input flows
 /// out to the channel, server output flows into the surface, and resizes are
@@ -30,6 +14,7 @@ final class SSHSession: TerminalSession {
     private let onHostKeyPrompt: TOFUHostKeyDelegate.Prompt?
 
     private let group: EventLoopGroup
+    private var transport: SSHTransport?
     private var channel: Channel?
     private var childChannel: Channel?
     private var ptyHandler: PTYChannelHandler?
@@ -61,52 +46,15 @@ final class SSHSession: TerminalSession {
         lifecycle.setStopped(false)
         lifecycle.notify(.connecting)
 
-        // Build authentication offers in preference order: private key (if
-        // provided), then password (if provided). Skip keys that fail to parse
-        // so one RSA/encrypted key does not block a good key or password.
-        var offers: [NIOSSHUserAuthenticationOffer.Offer] = []
-        let parsed = SSHKeyParser.parseUsable(connection.privateKeys)
-        for item in parsed.keys {
-            offers.append(.privateKey(.init(privateKey: item.key)))
-        }
-        if !connection.password.isEmpty {
-            offers.append(.password(.init(password: connection.password)))
-        }
-        guard !offers.isEmpty else {
-            lifecycle.notify(.failed(parsed.firstError.map(Self.describe) ?? "No authentication method provided."))
-            return
-        }
-
-        let authDelegate = OrderedAuthDelegate(username: connection.username, offers: offers)
-        let hostKeyDelegate = TOFUHostKeyDelegate(
-            hostID: "\(connection.host):\(connection.port)",
-            prompt: onHostKeyPrompt
-        )
-
-        let bootstrap = ClientBootstrap(group: group)
-            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .channelOption(ChannelOptions.connectTimeout, value: .seconds(20))
-            .channelInitializer { channel in
-                let sshHandler = NIOSSHHandler(
-                    role: .client(.init(
-                        userAuthDelegate: authDelegate,
-                        serverAuthDelegate: hostKeyDelegate
-                    )),
-                    allocator: channel.allocator,
-                    inboundChildChannelInitializer: nil
-                )
-                return channel.pipeline.addHandler(sshHandler)
-            }
-
+        let transport = SSHTransport(group: group, onHostKeyPrompt: onHostKeyPrompt)
+        self.transport = transport
         lifecycle.notify(.authenticating)
-        bootstrap.connect(host: connection.host, port: connection.port).whenComplete { [weak self] result in
+        transport.connect(connection).whenComplete { [weak self] result in
             guard let self else { return }
-            if self.lifecycle.isStopped() {
-                if case .success(let channel) = result { channel.close(promise: nil) }
-                return
-            }
+            if self.lifecycle.isStopped() { return }
             switch result {
             case .failure(let error):
+                _ = self.transport?.close()
                 self.lifecycle.notify(.failed(Self.describe(error)))
             case .success(let channel):
                 self.channel = channel
@@ -125,14 +73,15 @@ final class SSHSession: TerminalSession {
         let cleanup = forwardManager?.stopAll() ?? group.next().makeSucceededVoidFuture()
         forwardManager = nil
         let child = childChannel
-        let parent = channel
+        let transport = self.transport
+        self.transport = nil
         childChannel = nil
         channel = nil
         ptyHandler = nil
         cleanup.whenComplete { _ in
             child?.close(promise: nil)
-            parent?.close(promise: nil)
-            group.shutdownGracefully { _ in }
+            let closed = transport?.close() ?? group.next().makeSucceededVoidFuture()
+            closed.whenComplete { _ in group.shutdownGracefully { _ in } }
         }
     }
 
@@ -153,6 +102,7 @@ final class SSHSession: TerminalSession {
             }
             switch result {
             case .failure(let error):
+                _ = self.transport?.close()
                 self.lifecycle.notify(.failed(Self.describe(error)))
 
             case .success(let sshHandler):
@@ -184,6 +134,7 @@ final class SSHSession: TerminalSession {
                     }
                     switch result {
                     case .failure(let error):
+                        _ = self.transport?.close()
                         self.lifecycle.notify(.failed(Self.describe(error)))
                     case .success(let childChannel):
                         self.childChannel = childChannel
@@ -225,6 +176,7 @@ final class SSHSession: TerminalSession {
     }
 
     private func handleChannelClose(_ error: Error?) {
+        _ = transport?.close()
         if let error {
             lifecycle.notify(.failed(Self.describe(error)))
         } else {
@@ -263,48 +215,5 @@ final class SSHSession: TerminalSession {
             return "\(sshError)"
         }
         return error.localizedDescription
-    }
-}
-
-// MARK: - Auth delegate
-
-/// Offers a fixed, ordered list of authentication methods (e.g. private key
-/// then password), skipping any the server doesn't advertise.
-private final class OrderedAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
-    private let username: String
-    private let offers: [NIOSSHUserAuthenticationOffer.Offer]
-    private var index = 0
-
-    init(username: String, offers: [NIOSSHUserAuthenticationOffer.Offer]) {
-        self.username = username
-        self.offers = offers
-    }
-
-    func nextAuthenticationType(
-        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
-        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
-    ) {
-        while index < offers.count {
-            let offer = offers[index]
-            index += 1
-            if isAdvertised(offer, in: availableMethods) {
-                nextChallengePromise.succeed(
-                    NIOSSHUserAuthenticationOffer(username: username, serviceName: "", offer: offer)
-                )
-                return
-            }
-        }
-        nextChallengePromise.succeed(nil)
-    }
-
-    private func isAdvertised(
-        _ offer: NIOSSHUserAuthenticationOffer.Offer,
-        in methods: NIOSSHAvailableUserAuthenticationMethods
-    ) -> Bool {
-        switch offer {
-        case .privateKey: return methods.contains(.publicKey)
-        case .password: return methods.contains(.password)
-        default: return true
-        }
     }
 }

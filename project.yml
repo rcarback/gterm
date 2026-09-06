@@ -122,6 +122,11 @@ targets:
       - path: Sources/SSH/ChannelCloseOnce.swift
       - path: Sources/SSH/SessionStateNotifier.swift
       - path: Sources/SSH/SSHPort.swift
+      - path: Sources/Model/SavedConnection.swift
+      - path: Sources/SSH/SSHConnection.swift
+      - path: Sources/SSH/SSHTransport.swift
+      - path: Sources/SSH/SSHWrapperHandler.swift
+      - path: Sources/SSH/OrderedAuthDelegate.swift
       - path: Sources/Model/CommandHistory.swift
     dependencies:
       - package: OpenAI
