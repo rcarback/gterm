@@ -1,94 +1,51 @@
-# On-device SSH key generation
+# Generate keys on your device
 
-Status: implementation plan. This PR does not change app behavior and is independent of ProxyJump.
+Implemented in this PR. The change is independent of ProxyJump.
 
-## Outcome
+## Use
 
-A user can create an SSH identity in the Keys tab without copying a private key
-from another computer. The generated key is available to existing saved hosts
-(and, when available, jump hosts). The user can copy or share its OpenSSH public
-key for installation in a server's `authorized_keys`.
+1. Open **Keys → + → Generate Key**.
+2. Enter an optional name and tap **Create**.
+3. Copy or share the public key from the details screen.
+4. Add the public key to the server's `~/.ssh/authorized_keys`.
+5. Select the key in a saved host's **Private Keys** section.
 
-## Scope
+Tap an existing key to view its public key and SHA256 fingerprint. This also
+works for supported imported keys. Deleting a key shows the affected saved hosts
+and removes their references after confirmation. It does not change servers.
 
-Ship Ed25519 generation first, using `Curve25519.Signing.PrivateKey()` from the
-existing Crypto dependency. Keep RSA, ECDSA generation, Secure Enclave identities,
-SSH certificates, private-key export, and automatic installation on remote
-servers out of this change. Existing imported key types remain usable.
+## Storage and format
 
-The initial design stores an exportable software key in Keychain; it must not be
-described as Secure Enclave backed. Private-key material is never placed on the
-clipboard, shared, logged, or persisted in UserDefaults.
+The app generates Ed25519 keys through the existing Crypto dependency. It stores
+private material in Keychain with `AfterFirstUnlockThisDeviceOnly` protection.
+Private keys do not sync through iCloud or restore from backups. Keep another way
+to access your servers if you lose this device.
 
-## Current code and planned changes
+The private key uses the unencrypted OpenSSH format already accepted by the app.
+Keychain protects the stored secret. The app uses a software key. Generation requires no network access or external process.
 
-- `Sources/UI/KeyListView.swift`: offer Generate Key alongside Import Key. Ask for
-  a name, show Ed25519 as the algorithm, and generate only after the user taps
-  Create. Disable duplicate submissions while saving. After success, show a
-  public-key detail view with Copy and Share actions.
-- New `Sources/SSH/SSHKeyGenerator.swift`: generate Ed25519 material with Crypto;
-  produce a private-key representation accepted by `SSHKeyParser` and an OpenSSH
-  public line (`ssh-ed25519 <base64> <comment>`). Use SSH length-prefixed binary
-  encoding rather than treating raw public-key bytes as a complete SSH blob.
-  Normalize the comment to one line and exclude control characters.
-- Keep the existing text-based private-key storage and authentication path. Add
-  a small, tested OpenSSH Ed25519 private-key writer compatible with the existing
-  parser (unsealed `openssh-key-v1`, check integers, public/private records, and
-  required padding). This unencrypted representation is protected at rest by
-  Keychain, not by a separate SSH-key passphrase. Do not introduce a shell tool
-  or write a temporary private-key file on the device.
-- `Sources/Model/KeyStore.swift`: add `generateKey(name:)`, reusing validation and
-  storage through `importKey`. Publish metadata only after Keychain succeeds.
-  Provide public-key derivation from the stored key for the detail view; avoid
-  an independently persisted public-key copy that can become inconsistent.
-- `Sources/Model/Keychain.swift`: retain the current
-  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` protection and access group.
-  Check all writes and display recoverable failures. Do not add biometric gates
-  in this change, because unattended connection and reconnect behavior needs a
-  separate design for those gates.
-- `project.yml`: include Foundation-safe generator code in the test target.
+The app derives the public key from the stored private key. Copy and Share contain
+only the OpenSSH public line. Public-key comments use a single line with control
+characters removed. Metadata contains the key ID, name, and type, never its secret.
+A failed Keychain write leaves no metadata entry and permits retry.
 
-## User flow
+This change adds Ed25519 generation. Other generated algorithms, private-key
+export, agent forwarding, and automatic public-key installation remain outside
+its scope. Existing imported key types remain supported.
 
-1. Open Keys, choose Generate Key, enter a name, and tap Create.
-2. Store the private key in Keychain and show its public-key line and SHA256
-   fingerprint. Use the existing fingerprint helper for consistency.
-3. Copy or share the public key. Explain that only this public key belongs in
-   the server's `~/.ssh/authorized_keys`. Remote installation is performed by the
-   user; this feature must not contact or modify servers by itself.
-4. Select the generated key on a saved host and connect using the existing
-   public-key authentication path.
+## Validation
 
-The key remains on this device and is not restored from backups. The detail view
-should explain that users need another way into their servers if the device is
-lost. Deletion should identify affected saved hosts and use existing reference
-cleanup; deleting a local key does not remove its public key from servers.
+Generate the Xcode project with `xcodegen generate` before testing.
 
-## Validation and acceptance criteria
+- `gtermTests` covers generation, parser compatibility, distinct identities,
+  comment handling, storage failure and retry, and local SSH authentication.
+- `gtermKeyTests` adds macOS interoperability checks with `ssh-keygen -y` across
+  padding boundaries. These tests create and delete disposable keys.
+- `KeyGenerationValidation` runs app-hosted Keychain attribute checks and UI
+  checks for creation, duplicate taps, public-key display, persistence, and deletion.
 
-- Generated private keys round-trip through `SSHKeyParser`; the parsed public
-  key matches the generated public line and fingerprint.
-- Two generations yield different identities; a signature verifies with the
-  matching public key and fails with an unrelated key.
-- Validate OpenSSH interoperability using disposable test keys and `ssh-keygen
-  -y`, comparing public algorithm/blob fields. Fixture private material is never
-  a real user identity.
-- Exercise real public-key SSH authentication with a locally controlled test
-  server; generation must work without network access.
-- Cover blank names, Unicode names, newline/control-character sanitization,
-  malformed serializer input, and exact binary padding/length boundaries.
-- Inject storage failure: no phantom metadata entry or success UI appears and
-  retry remains possible. Test duplicate-tap handling and deletion/reference
-  cleanup.
-- On a signed iPhone build, verify persistence after relaunch, assignment to a
-  host, successful authentication, and that Copy/Share contains only public
-  material. Inspect Keychain attributes through an app-level integration test.
-- Run the existing suite and iOS device build. Existing imported keys and saved
-  connections must continue decoding and authenticating unchanged.
+Example: `xcodebuild -project gterm.xcodeproj -scheme gtermKeyTests -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test`.
 
-## Delivery
-
-Implement in its own feature PR after review of this plan. No dependency on the
-ProxyJump branch is needed: both features reuse `KeyStore` references. A later
-combined smoke test can use one generated key on a jump host and a different key
-on its destination to verify independent identity selection.
+The serializer accepts a Crypto-generated key instead of raw key bytes. Invalid
+raw serializer input is outside its interface. Public-key derivation
+still rejects malformed stored private material.

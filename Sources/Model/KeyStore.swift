@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Metadata for an imported SSH private key. The key material itself is NOT
 /// stored here — only in the Keychain (see KeyStore).
@@ -17,10 +18,36 @@ final class KeyStore: ObservableObject {
     private let defaultsKey = "sshKeys"
     private func account(_ id: UUID) -> String { "sshkey." + id.uuidString }
 
-    init() { load() }
+    private let defaults: UserDefaults
+    private let saveSecret: (String, String) -> Bool
+    private let readSecret: (String) -> String?
+    private let deleteSecret: (String) -> Void
+
+    init(defaults: UserDefaults = .standard,
+         saveSecret: @escaping (String, String) -> Bool = { Keychain.setPassword($0, account: $1) },
+         readSecret: @escaping (String) -> String? = { Keychain.password(account: $0) },
+         deleteSecret: @escaping (String) -> Void = { Keychain.deletePassword(account: $0) }) {
+        self.defaults = defaults
+        self.saveSecret = saveSecret
+        self.readSecret = readSecret
+        self.deleteSecret = deleteSecret
+        load()
+    }
+
+    func generateKey(name: String) throws -> StoredKey {
+        let generated = try SSHKeyGenerator.generate(name: name)
+        return try importKey(name: name, text: generated.privateKey)
+    }
+
+    func publicKey(for key: StoredKey) throws -> SSHPublicKey {
+        guard let text = text(for: key.id) else {
+            throw SSHKeyError.malformed("private key is unavailable in Keychain")
+        }
+        return try SSHKeyGenerator.publicKey(privateKey: text, comment: key.name)
+    }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+        guard let data = defaults.data(forKey: defaultsKey),
               let decoded = try? JSONDecoder().decode([StoredKey].self, from: data)
         else { return }
         keys = decoded
@@ -28,7 +55,7 @@ final class KeyStore: ObservableObject {
 
     private func persist() {
         if let data = try? JSONEncoder().encode(keys) {
-            UserDefaults.standard.set(data, forKey: defaultsKey)
+            defaults.set(data, forKey: defaultsKey)
         }
     }
 
@@ -37,10 +64,10 @@ final class KeyStore: ObservableObject {
     @discardableResult
     func importKey(name: String, text: String) throws -> StoredKey {
         let parsed = try SSHKeyParser.parse(text) // validates; throws on failure
-        let displayName = name.trimmingCharacters(in: .whitespaces).isEmpty
+        let displayName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Key \(keys.count + 1)" : name
         let key = StoredKey(name: displayName, type: parsed.type)
-        guard Keychain.setPassword(text, account: account(key.id)) else {
+        guard saveSecret(text, account(key.id)) else {
             throw SSHKeyError.malformed("couldn't store key in Keychain")
         }
         keys.append(key)
@@ -56,12 +83,12 @@ final class KeyStore: ObservableObject {
 
     func delete(_ key: StoredKey) {
         keys.removeAll { $0.id == key.id }
-        Keychain.deletePassword(account: account(key.id))
+        deleteSecret(account(key.id))
         persist()
     }
 
     func text(for id: UUID) -> String? {
-        Keychain.password(account: account(id))
+        readSecret(account(id))
     }
 
     func key(for id: UUID) -> StoredKey? {

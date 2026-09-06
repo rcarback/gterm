@@ -22,6 +22,16 @@ connection via a custom **passthru IO backend** added to libghostty. See
   Keychain, device-only); each host can select one or more keys to try
 - ⏳ Encrypted (passphrase) keys, RSA, richer settings (font/theme)
 
+## Generate an SSH key
+
+Open **Keys → + → Generate Key** to create an Ed25519 key on your device.
+Copy or share its public key, add it to your server's `authorized_keys`, then
+select the key on a saved host. The private key stays in device-only Keychain
+storage. Keep another way to access your servers if the device is lost.
+
+See [on-device key generation](docs/on-device-key-generation-plan.md) for storage
+and test details.
+
 ## Building
 
 Requirements: macOS, Xcode 26+, and the patched Homebrew zig:
