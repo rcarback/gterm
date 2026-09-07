@@ -14,7 +14,7 @@ struct ConnectionListView: View {
 
     @State private var editing: SavedConnection?
     @State private var passwordPromptFor: SavedConnection?
-    @State private var promptPassword = ""
+    @State private var readyConnection: SSHConnection?
 
     var body: some View {
         NavigationStack {
@@ -70,22 +70,20 @@ struct ConnectionListView: View {
             .sheet(item: $editing) { conn in
                 AddConnectionView(store: store, keyStore: keyStore, forwardStore: forwardStore, connection: conn)
             }
-            .alert(
-                "Password",
-                isPresented: Binding(
-                    get: { passwordPromptFor != nil },
-                    set: { if !$0 { passwordPromptFor = nil } }
-                ),
-                presenting: passwordPromptFor
-            ) { conn in
-                SecureField("password", text: $promptPassword)
-                Button("Connect") {
-                    onConnect(makeConnection(conn, password: promptPassword))
-                    promptPassword = ""
+            .sheet(item: $passwordPromptFor, onDismiss: {
+                if let connection = readyConnection {
+                    readyConnection = nil
+                    onConnect(connection)
                 }
-                Button("Cancel", role: .cancel) { promptPassword = "" }
-            } message: { conn in
-                Text("Enter the password for \(conn.username)@\(conn.host).")
+            }) { conn in
+                ConnectionCredentialsView(hosts: [conn], keyStore: keyStore) { passwords, selectedKeys in
+                    var selected = conn
+                    if let keyID = selectedKeys[conn.id] {
+                        selected.keyIDs = [keyID]
+                        store.save(selected, password: nil)
+                    }
+                    readyConnection = makeConnection(selected, password: passwords[conn.id] ?? "")
+                }
             }
         }
     }
@@ -113,7 +111,6 @@ struct ConnectionListView: View {
         } else if !keys.isEmpty {
             onConnect(makeConnection(conn, password: ""))
         } else {
-            promptPassword = ""
             passwordPromptFor = conn
         }
     }
