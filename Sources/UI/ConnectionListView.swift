@@ -81,8 +81,16 @@ struct ConnectionListView: View {
                     onConnect(connection)
                 }
             }) { request in
-                ConnectionCredentialsView(hosts: request.missing) { passwords in
-                    openRoute(request.route, passwords: passwords, afterDismiss: true)
+                ConnectionCredentialsView(hosts: request.missing, keyStore: keyStore) { passwords, selectedKeys in
+                    let route = request.route.map { host in
+                        var selected = host
+                        if let keyID = selectedKeys[host.id] {
+                            selected.keyIDs = [keyID]
+                            store.save(selected, password: nil)
+                        }
+                        return selected
+                    }
+                    openRoute(route, passwords: passwords, afterDismiss: true)
                 }
             }
             .alert("Cannot Connect", isPresented: Binding(
@@ -169,39 +177,4 @@ private struct ConnectionCredentialRequest: Identifiable {
     let id = UUID()
     let route: [SavedConnection]
     let missing: [SavedConnection]
-}
-
-/// Collect missing passwords together so each hop can authenticate independently.
-private struct ConnectionCredentialsView: View {
-    let hosts: [SavedConnection]
-    let onConnect: ([UUID: String]) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var passwords: [UUID: String] = [:]
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                ForEach(hosts) { host in
-                    Section(host.title) {
-                        Text("\(host.username)@\(host.host):\(host.port)")
-                            .font(.caption).foregroundStyle(.secondary)
-                        SecureField("Password", text: Binding(
-                            get: { passwords[host.id] ?? "" },
-                            set: { passwords[host.id] = $0 }
-                        ))
-                    }
-                }
-            }
-            .navigationTitle("Connection Passwords")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Connect") { onConnect(passwords); dismiss() }
-                        .disabled(hosts.contains { (passwords[$0.id] ?? "").isEmpty })
-                }
-            }
-        }
-    }
 }

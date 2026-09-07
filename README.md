@@ -34,6 +34,9 @@ Copy or share its public key, add it to your server's `authorized_keys`, then
 select the key on a saved host. The private key stays in device-only Keychain
 storage. Keep another way to access your servers if the device is lost.
 
+If a connection needs credentials, tap **Select SSH Key** in its prompt to
+choose a saved key. Tapping **Connect** remembers that choice for the host.
+
 See [on-device key generation](docs/on-device-key-generation-plan.md) for storage
 and test details.
 
