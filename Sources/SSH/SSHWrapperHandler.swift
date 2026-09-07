@@ -17,8 +17,7 @@ import NIOSSH
 
 /// A simple handler that wraps data into `SSHChannelData` for forwarding, and
 /// unwraps it on the way back. Ported from the swift-nio-ssh sample's
-/// `PortForwardingServer`; the only change is using `PortForwardError.invalidData`
-/// (the sample's `SSHClientError` is internal to the example target).
+/// `PortForwardingServer`.
 final class SSHWrapperHandler: ChannelDuplexHandler {
     typealias InboundIn = SSHChannelData
     typealias InboundOut = ByteBuffer
@@ -29,7 +28,7 @@ final class SSHWrapperHandler: ChannelDuplexHandler {
         let data = self.unwrapInboundIn(data)
 
         guard case .channel = data.type, case .byteBuffer(let buffer) = data.data else {
-            context.fireErrorCaught(PortForwardError.invalidData)
+            context.fireErrorCaught(SSHForwardingError.invalidData)
             return
         }
 
@@ -42,3 +41,5 @@ final class SSHWrapperHandler: ChannelDuplexHandler {
         context.write(self.wrapOutboundOut(wrapped), promise: promise)
     }
 }
+
+enum SSHForwardingError: Error { case invalidData }

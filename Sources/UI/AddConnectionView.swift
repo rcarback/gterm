@@ -25,7 +25,15 @@ struct AddConnectionView: View {
     private var isValid: Bool {
         !connection.host.trimmingCharacters(in: .whitespaces).isEmpty &&
         !connection.username.trimmingCharacters(in: .whitespaces).isEmpty &&
-        SSHPort.parse(portText) != nil
+        SSHPort.parse(portText) != nil &&
+        (try? SSHRoute.resolve(connection, in: store.connections)) != nil
+    }
+
+    private var routeError: String? {
+        do {
+            _ = try SSHRoute.resolve(connection, in: store.connections)
+            return nil
+        } catch { return error.localizedDescription }
     }
 
     var body: some View {
@@ -39,6 +47,26 @@ struct AddConnectionView: View {
                     TextField("port", text: $portText).keyboardType(.numberPad)
                     TextField("username", text: $connection.username)
                         .autocorrectionDisabled().textInputAutocapitalization(.never)
+                }
+
+                Section {
+                    Picker("Jump Host", selection: $connection.jumpHostID) {
+                        Text("None (direct connection)").tag(nil as UUID?)
+                        ForEach(store.connections.filter { $0.id != connection.id }) { host in
+                            Text(host.title).tag(Optional(host.id))
+                        }
+                        if let id = connection.jumpHostID,
+                           !store.connections.contains(where: { $0.id == id && $0.id != connection.id }) {
+                            Text("Unavailable jump host").tag(Optional(id))
+                        }
+                    }
+                    if let error = routeError {
+                        Text(error).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("ProxyJump")
+                } footer: {
+                    Text("Connect through another saved host. Each host uses its own keys or password. The destination hostname is resolved by the jump host.")
                 }
 
                 Section {

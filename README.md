@@ -18,6 +18,7 @@ connection via a custom **passthru IO backend** added to libghostty. See
 - ✅ SSH transport (swift-nio-ssh): password auth, PTY shell, window-change
 - ✅ Custom on-screen keyboard (esc/ctrl/alt/tab/arrows/symbols, sticky mods)
 - ✅ Saved connections (Keychain passwords) + trust-on-first-use host keys
+- ✅ ProxyJump-style routing through saved jump hosts, including chained jumps
 - ✅ Public-key auth: generate Ed25519/RSA keys and import Ed25519/ECDSA/RSA
   keys in the Keys tab. Keys stay in device-only Keychain storage. Each host can
   select one or more keys to try.
@@ -35,6 +36,25 @@ storage. Keep another way to access your servers if the device is lost.
 
 See [on-device key generation](docs/on-device-key-generation-plan.md) for storage
 and test details.
+
+## Connecting through a jump host
+
+1. Save a connection for your reachable jump server (for example, `bastion.example.com`
+   on port `2222`), including its username and selected key or password.
+2. Save the destination using its hostname as seen from the jump server (for
+   example, `private.internal`), its SSH port, and its own username/credentials.
+3. In the destination's **ProxyJump → Jump Host** setting, select the saved jump
+   server. Connect to the destination from Hosts.
+
+Each hop authenticates separately and asks you to verify its host key. Missing
+passwords are requested together before connecting. A jump host can itself use
+another saved jump host; loops and deleted jump-host references are rejected.
+The jump server must permit SSH TCP forwarding to the next host. Destination
+port forwards operate through the final SSH connection.
+
+This provides ProxyJump-style transport. It does not import OpenSSH config files,
+execute `ProxyCommand`, or forward an SSH agent. Import the keys needed for each
+host into the app's Keys tab, or use passwords; private keys stay on the phone.
 
 ## Building
 
