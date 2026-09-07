@@ -8,11 +8,11 @@ options:
 
 packages:
   SwiftNIOSSH:
-    url: https://github.com/apple/swift-nio-ssh.git
-    minorVersion: 0.13.0
+    url: https://github.com/rcarback/swift-nio-ssh.git
+    revision: 7b4f96b2a1328317eeb5dab4bbfbc931872ea5f3
   SwiftCrypto:
-    url: https://github.com/apple/swift-crypto.git
-    from: 3.0.0
+    url: https://github.com/rcarback/swift-crypto.git
+    revision: 23ddb5ee80893254a9b353668843aff5166dc4cc
   # LLM streaming (SSE) follows the runse project: it streams via these SDKs
   # rather than hand-parsing Server-Sent Events.
   OpenAI:
@@ -98,6 +98,8 @@ targets:
         product: NIOSSH
       - package: SwiftCrypto
         product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
       - package: OpenAI
       - package: SwiftAnthropic
       - sdk: Metal.framework
@@ -118,6 +120,9 @@ targets:
       - path: Sources/LLM
       # Foundation-safe units covered by the audit (no GhosttyKit / UIKit).
       - path: Sources/SSH/SSHKeyParser.swift
+      - path: Sources/SSH/SSHKeyGenerator.swift
+      - path: Sources/Model/KeyStore.swift
+      - path: Sources/Model/Keychain.swift
       - path: Sources/SSH/KnownHosts.swift
       - path: Sources/SSH/ChannelCloseOnce.swift
       - path: Sources/SSH/SessionStateNotifier.swift
@@ -130,8 +135,70 @@ targets:
         product: NIOSSH
       - package: SwiftCrypto
         product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermTests
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
+
+  gtermIntegrationTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: IntegrationTests
+      - path: Tests/GeneratedKeyAuthenticationTests.swift
+    dependencies:
+      - target: gterm
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/gterm.app/gterm
+        BUNDLE_LOADER: $(TEST_HOST)
+        OTHER_SWIFT_FLAGS: $(inherited) -DKEYGEN_HOSTED_TESTS
+
+  gtermUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: gterm
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: gterm
+
+  gtermKeyTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/SSHKeyGeneratorTests.swift
+      - path: Tests/SSHKeyGenerationWorkerTests.swift
+      - path: Tests/GeneratedKeyAuthenticationTests.swift
+      - path: Sources/SSH/SSHKeyGenerator.swift
+      - path: Sources/SSH/SSHKeyParser.swift
+      - path: Sources/SSH/KnownHosts.swift
+      - path: Sources/Model/KeyStore.swift
+      - path: Sources/Model/Keychain.swift
+    dependencies:
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftCrypto
+        product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  KeyGenerationValidation:
+    build:
+      targets:
+        gterm: all
+    test:
+      targets:
+        - gtermIntegrationTests
+        - gtermUITests
