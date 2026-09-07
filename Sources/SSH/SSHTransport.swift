@@ -103,7 +103,13 @@ final class SSHTransport {
     private func configure(_ channel: Channel, endpoint: SSHConnection,
                            ready: EventLoopPromise<Void>) -> EventLoopFuture<Void> {
         let parsed = SSHKeyParser.parseUsable(endpoint.privateKeys)
-        var offers = parsed.keys.map { NIOSSHUserAuthenticationOffer.Offer.privateKey(.init(privateKey: $0.key)) }
+        var offers: [NIOSSHUserAuthenticationOffer.Offer] = []
+        for item in parsed.keys {
+            offers.append(.privateKey(.init(privateKey: item.key)))
+            if item.type.hasPrefix("RSA ") {
+                offers.append(.privateKey(.init(privateKey: item.key, rsaSignatureAlgorithm: .sha256)))
+            }
+        }
         if !endpoint.password.isEmpty { offers.append(.password(.init(password: endpoint.password))) }
         guard !offers.isEmpty else {
             let error = SSHTransportError.endpoint(endpoint.host, parsed.firstError.map { String(describing: $0) } ?? "No usable key or password provided.")

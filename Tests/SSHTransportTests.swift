@@ -16,10 +16,10 @@ final class SSHTransportTests: XCTestCase {
     }
 
     func testDirectAndTwoJumpConnectionsCarryData() throws {
-        for hops in [0, 2] {
+        for (hops, rsa) in [(0, false), (2, false), (2, true)] {
             let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
             defer { try! group.syncShutdownGracefully() }
-            let fixture = JumpServer(hops: hops)
+            let fixture = JumpServer(hops: hops, rsa: rsa)
             let server = try ServerBootstrap(group: group).childChannelInitializer { channel in
                 channel.pipeline.addHandler(fixture.handler(channel, index: 0))
             }.bind(host: "127.0.0.1", port: 0).wait()
@@ -119,8 +119,11 @@ private final class JumpServer {
     let keys: [NIOSSHPrivateKey]
     var targets: [String] = []
 
-    init(hops: Int) {
+    let identity: GeneratedSSHKey?
+
+    init(hops: Int, rsa: Bool = false) {
         self.hops = hops
+        identity = rsa ? try! SSHKeyGenerator.generate(name: "jump test", algorithm: .rsa, rsaBits: 2048) : nil
         keys = (0...hops).map { _ in NIOSSHPrivateKey(ed25519Key: Curve25519.Signing.PrivateKey()) }
     }
 
@@ -128,13 +131,14 @@ private final class JumpServer {
         (0...hops).map { index in
             SSHConnection(host: index == 0 ? "127.0.0.1" : "target-\(index)-\(suffix).invalid",
                           port: index == 0 ? port : 2200 + index,
-                          username: "user\(index)", password: "password\(index)")
+                          username: "user\(index)", password: identity == nil ? "password\(index)" : "",
+                          privateKeys: identity.map { [$0.privateKey] } ?? [])
         }
     }
 
     func handler(_ channel: Channel, index: Int) -> NIOSSHHandler {
         NIOSSHHandler(role: .server(.init(
-            hostKeys: [keys[index]], userAuthDelegate: ServerPassword(index: index)
+            hostKeys: [keys[index]], userAuthDelegate: ServerPassword(index: index, key: identity.map { try! SSHKeyParser.parse($0.privateKey).key.publicKey })
         )), allocator: channel.allocator) { child, type in
             if index < self.hops {
                 guard case .directTCPIP(let target) = type else {
@@ -153,11 +157,14 @@ private enum TestError: Error { case unexpectedChannel }
 
 private final class ServerPassword: NIOSSHServerUserAuthenticationDelegate {
     let index: Int
-    let supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods = .password
-    init(index: Int) { self.index = index }
+    let key: NIOSSHPublicKey?
+    var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods { key == nil ? .password : .publicKey }
+    init(index: Int, key: NIOSSHPublicKey? = nil) { self.index = index; self.key = key }
     func requestReceived(request: NIOSSHUserAuthenticationRequest,
                          responsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>) {
-        if request.username == "user\(index)", case .password(let password) = request.request,
+        if request.username == "user\(index)", case .publicKey(let offered) = request.request, offered.publicKey == key {
+            responsePromise.succeed(.success)
+        } else if request.username == "user\(index)", case .password(let password) = request.request,
            password.password == "password\(index)" {
             responsePromise.succeed(.success)
         } else { responsePromise.succeed(.failure) }

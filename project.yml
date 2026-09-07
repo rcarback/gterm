@@ -9,7 +9,7 @@ options:
 packages:
   SwiftNIOSSH:
     url: https://github.com/rcarback/swift-nio-ssh.git
-    revision: 7b4f96b2a1328317eeb5dab4bbfbc931872ea5f3
+    revision: b0aff477572bb47d197fb85736458178eb900e46
   SwiftCrypto:
     url: https://github.com/rcarback/swift-crypto.git
     revision: 23ddb5ee80893254a9b353668843aff5166dc4cc
