@@ -6,6 +6,24 @@ import NIOSSH
 #endif
 
 final class SSHKeyGeneratorTests: XCTestCase {
+    func testRSAKeysRoundTripWithRequestedSize() throws {
+        for bits in [3072, 4096, 8192] {
+            let generated = try SSHKeyGenerator.generate(name: "phone", algorithm: .rsa, rsaBits: bits)
+            let parsed = try SSHKeyParser.parse(generated.privateKey)
+            XCTAssertEqual(parsed.type, "RSA \(bits)")
+            XCTAssertTrue(generated.publicKey.line.hasPrefix("ssh-rsa "))
+            XCTAssertEqual(generated.publicKey.line, String(openSSHPublicKey: parsed.key.publicKey) + " phone")
+        }
+    }
+
+    func testRSASizeValidationAvoidsCryptoPreconditions() {
+        for bits in [0, -8, 1024, 2049, 8200, 32896, Int.max] {
+            XCTAssertFalse(SSHKeyGenerator.isValidRSASize(bits))
+            XCTAssertThrowsError(try SSHKeyGenerator.generate(name: "bad", algorithm: .rsa, rsaBits: bits))
+        }
+        for bits in [2048, 8192, 8320, 16384, 32768] { XCTAssertTrue(SSHKeyGenerator.isValidRSASize(bits)) }
+    }
+
     func testGeneratedKeyRoundTripsAndPublicLineMatches() throws {
         let generated = try SSHKeyGenerator.generate(name: "phone")
         let parsed = try SSHKeyParser.parse(generated.privateKey)
@@ -30,6 +48,36 @@ final class SSHKeyGeneratorTests: XCTestCase {
     }
 
     #if os(macOS)
+    func testOpenSSHReadsLargeRSAAndConvertedOpenSSHKey() throws {
+        let generated = try SSHKeyGenerator.generate(name: "large", algorithm: .rsa, rsaBits: 8320)
+        XCTAssertEqual(try SSHKeyParser.parse(generated.privateKey).type, "RSA 8320")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("rsa")
+        try generated.privateKey.write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        for arguments in [["-y", "-f", file.path], ["-p", "-P", "", "-N", "", "-o", "-f", file.path]] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+            process.arguments = arguments
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = Pipe()
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+            if arguments.first == "-y" {
+                XCTAssertEqual(Array(String(decoding: data, as: UTF8.self).split(whereSeparator: \.isWhitespace).prefix(2)),
+                               Array(generated.publicKey.line.split(separator: " ").prefix(2)))
+            }
+        }
+        let converted = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(converted.contains("BEGIN OPENSSH PRIVATE KEY"))
+        XCTAssertEqual(try SSHKeyGenerator.publicKey(privateKey: converted, comment: "large").line, generated.publicKey.line)
+    }
+
     func testOpenSSHReadsGeneratedKeysAcrossPaddingBoundaries() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

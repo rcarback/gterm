@@ -259,6 +259,13 @@ private struct GenerateKeyView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var saving = false
+    @State private var algorithm: SSHKeyAlgorithm = .ed25519
+    @State private var rsaSize = "3072"
+    @State private var generationTask: Task<Void, Never>?
+
+    private var validSize: Bool {
+        algorithm != .rsa || Int(rsaSize).map(SSHKeyGenerator.isValidRSASize) == true
+    }
     @State private var generatedKey: StoredKey?
     @State private var generationError: String?
 
@@ -275,7 +282,19 @@ private struct GenerateKeyView: View {
                                 .textInputAutocapitalization(.never)
                         }
                         Section {
-                            LabeledContent("Algorithm", value: "Ed25519")
+                            Picker("Algorithm", selection: $algorithm) {
+                                ForEach(SSHKeyAlgorithm.allCases) { option in
+                                    Text(option.rawValue).tag(option)
+                                }
+                            }
+                            .disabled(saving)
+                            if algorithm == .rsa {
+                                TextField("RSA size (bits)", text: $rsaSize)
+                                    .keyboardType(.numberPad).disabled(saving)
+                                Text("Use 2048–32768 bits, in multiples of 128. Sizes such as 8192 and 16384 are supported. Larger keys take longer to generate.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if saving { ProgressView("Generating key…") }
                         } footer: {
                             Text("Creates a key on this device and stores it in the Keychain. The private key stays on this device.")
                         }
@@ -293,31 +312,45 @@ private struct GenerateKeyView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(generatedKey == nil ? "Cancel" : "Done") { dismiss() }
-                        .disabled(saving)
+                    Button(generatedKey == nil ? "Cancel" : "Done") {
+                        generationTask?.cancel()
+                        dismiss()
+                    }
                 }
                 if generatedKey == nil {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Create") { create() }
-                            .disabled(saving)
+                            .disabled(saving || !validSize)
                     }
                 }
             }
             .interactiveDismissDisabled(saving)
+            .onDisappear { generationTask?.cancel() }
         }
     }
 
     private func create() {
-        guard !saving, generatedKey == nil else { return }
+        guard !saving, generatedKey == nil, validSize else { return }
         saving = true
         generationError = nil
-        defer { saving = false }
-        do {
-            generatedKey = try store.generateKey(name: name)
-        } catch let error as SSHKeyError {
-            generationError = error.description
-        } catch {
-            generationError = error.localizedDescription
+        let requestedName = name
+        let requestedAlgorithm = algorithm
+        let requestedBits = Int(rsaSize) ?? 3072
+        generationTask = Task { @MainActor in
+            defer { saving = false }
+            do {
+                let generated = try await SSHKeyGenerationWorker.shared.generate(
+                    name: requestedName, algorithm: requestedAlgorithm, rsaBits: requestedBits
+                )
+                try Task.checkCancellation()
+                generatedKey = try store.importKey(name: requestedName, text: generated.privateKey)
+            } catch is CancellationError {
+                return
+            } catch let error as SSHKeyError {
+                generationError = error.description
+            } catch {
+                generationError = error.localizedDescription
+            }
         }
     }
 }
@@ -341,9 +374,6 @@ private struct PublicKeyDetailsView: View {
                         .textSelection(.enabled)
                 }
                 Section {
-                    Text(publicKey.line)
-                        .font(.system(.footnote, design: .monospaced))
-                        .textSelection(.enabled)
                     Button {
                         UIPasteboard.general.string = publicKey.line
                     } label: {
@@ -352,6 +382,9 @@ private struct PublicKeyDetailsView: View {
                     ShareLink(item: publicKey.line) {
                         Label("Share Public Key", systemImage: "square.and.arrow.up")
                     }
+                    Text(publicKey.line)
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
                 } header: {
                     Text("Public Key")
                 } footer: {

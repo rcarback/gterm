@@ -8,11 +8,11 @@ options:
 
 packages:
   SwiftNIOSSH:
-    url: https://github.com/apple/swift-nio-ssh.git
-    minorVersion: 0.13.0
+    url: https://github.com/rcarback/swift-nio-ssh.git
+    revision: 7b4f96b2a1328317eeb5dab4bbfbc931872ea5f3
   SwiftCrypto:
-    url: https://github.com/apple/swift-crypto.git
-    from: 3.0.0
+    url: https://github.com/rcarback/swift-crypto.git
+    revision: 23ddb5ee80893254a9b353668843aff5166dc4cc
   # LLM streaming (SSE) follows the runse project: it streams via these SDKs
   # rather than hand-parsing Server-Sent Events.
   OpenAI:
@@ -98,6 +98,8 @@ targets:
         product: NIOSSH
       - package: SwiftCrypto
         product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
       - package: OpenAI
       - package: SwiftAnthropic
       - sdk: Metal.framework
@@ -133,6 +135,8 @@ targets:
         product: NIOSSH
       - package: SwiftCrypto
         product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermTests
@@ -171,6 +175,7 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Tests/SSHKeyGeneratorTests.swift
+      - path: Tests/SSHKeyGenerationWorkerTests.swift
       - path: Tests/GeneratedKeyAuthenticationTests.swift
       - path: Sources/SSH/SSHKeyGenerator.swift
       - path: Sources/SSH/SSHKeyParser.swift
@@ -182,6 +187,8 @@ targets:
         product: NIOSSH
       - package: SwiftCrypto
         product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

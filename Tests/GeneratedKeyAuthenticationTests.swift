@@ -10,7 +10,15 @@ import NIOSSH
 
 final class GeneratedKeyAuthenticationTests: XCTestCase {
     func testGeneratedIdentityAuthenticatesAndUnrelatedIdentityFails() throws {
-        let generated = try SSHKeyGenerator.generate(name: "client")
+        try authenticateGeneratedKey(algorithm: .ed25519)
+    }
+
+    func testGeneratedRSAIdentityAuthenticatesAndUnrelatedIdentityFails() throws {
+        try authenticateGeneratedKey(algorithm: .rsa)
+    }
+
+    private func authenticateGeneratedKey(algorithm: SSHKeyAlgorithm) throws {
+        let generated = try SSHKeyGenerator.generate(name: "client", algorithm: algorithm, rsaBits: 8192)
         let expected = try SSHKeyParser.parse(generated.privateKey).key
         let unrelated = try SSHKeyParser.parse(SSHKeyGenerator.generate(name: "other").privateKey).key
         let serverKey = try SSHKeyParser.parse(SSHKeyGenerator.generate(name: "server").privateKey).key

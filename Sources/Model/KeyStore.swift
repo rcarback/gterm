@@ -34,8 +34,8 @@ final class KeyStore: ObservableObject {
         load()
     }
 
-    func generateKey(name: String) throws -> StoredKey {
-        let generated = try SSHKeyGenerator.generate(name: name)
+    func generateKey(name: String, algorithm: SSHKeyAlgorithm = .ed25519, rsaBits: Int = 3072) throws -> StoredKey {
+        let generated = try SSHKeyGenerator.generate(name: name, algorithm: algorithm, rsaBits: rsaBits)
         return try importKey(name: name, text: generated.privateKey)
     }
 
