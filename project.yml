@@ -7,6 +7,9 @@ options:
   groupSortPosition: top
 
 packages:
+  SwiftNIO:
+    url: https://github.com/apple/swift-nio.git
+    revision: a931f2c1de8dd49381ce3bf2e279d033f68d8865
   SwiftNIOSSH:
     url: https://github.com/rcarback/swift-nio-ssh.git
     revision: b0aff477572bb47d197fb85736458178eb900e46
@@ -125,6 +128,10 @@ targets:
       - path: Sources/Model/Keychain.swift
       - path: Sources/SSH/KnownHosts.swift
       - path: Sources/SSH/ChannelCloseOnce.swift
+      - path: Sources/SSH/SSHExecHandler.swift
+      - path: Sources/SSH/PTYChannelHandler.swift
+      - path: Sources/Screen
+      - path: Sources/Terminal/TerminalTapMovement.swift
       - path: Sources/SSH/SessionStateNotifier.swift
       - path: Sources/SSH/SSHPort.swift
       - path: Sources/Model/SavedConnection.swift
@@ -134,6 +141,8 @@ targets:
       - path: Sources/SSH/OrderedAuthDelegate.swift
       - path: Sources/Model/CommandHistory.swift
     dependencies:
+      - package: SwiftNIO
+        product: NIOEmbedded
       - package: OpenAI
       - package: SwiftAnthropic
       - package: SwiftNIOSSH
@@ -147,6 +156,31 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermTests
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
+
+  gtermScreenTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/Screen
+      - path: Sources/Terminal/TerminalTapMovement.swift
+      - path: Tests/TerminalTapMovementTests.swift
+      - path: Sources/SSH/SSHExecHandler.swift
+      - path: Sources/SSH/PTYChannelHandler.swift
+      - path: Sources/SSH/ChannelCloseOnce.swift
+      - path: Tests/ScreenProtocolTests.swift
+      - path: Tests/ScreenControllerTests.swift
+      - path: Tests/SSHExecHandlerTests.swift
+    dependencies:
+      - package: SwiftCrypto
+        product: Crypto
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftNIO
+        product: NIOEmbedded
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 
   gtermIntegrationTests:
     type: bundle.unit-test
@@ -199,6 +233,13 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:
+  ScreenValidation:
+    build:
+      targets:
+        gtermScreenTests: all
+    test:
+      targets:
+        - gtermScreenTests
   gterm:
     build:
       targets:

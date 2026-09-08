@@ -110,16 +110,22 @@ final class TerminalSurfaceView: UIView {
 
     // MARK: Selection / clipboard gesture state (see TerminalSurfaceView+Selection)
 
-    /// Where the active long-press began, and whether it has moved far enough to
-    /// count as a selection drag (vs. a stationary hold-to-paste).
-    var selectionStart: CGPoint?
-    var selectionMoved = false
+    weak var selectionLongPress: UILongPressGestureRecognizer?
+    var selectionView: TerminalSelectionView?
 
     // MARK: Scroll gesture state (see TerminalSurfaceView+Scroll)
 
     /// Cumulative pan translation already converted to scroll, so each `.changed`
     /// only forwards the incremental delta.
     var lastScrollTranslationY: CGFloat = 0
+
+    /// Overrides touch-wheel input when the host supplies remote scrollback.
+    var onTouchScroll: ((CGFloat) -> Void)?
+    var onBeforeInput: (() -> Void)?
+    var canTapToMoveCursor: (() -> Bool)?
+    var onTap: (() -> Bool)?
+    var onGeometryChange: (() -> Void)?
+    private var lastSurfaceSize: CGSize = .zero
 
     /// The scroll pan recognizer, disabled while a selection long-press is active
     /// so the two gestures never run together.
@@ -128,6 +134,7 @@ final class TerminalSurfaceView: UIView {
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     deinit {
+        typingDisplayLink?.invalidate()
         if let surface { ghostty_surface_free(surface) }
     }
 
@@ -146,12 +153,19 @@ final class TerminalSurfaceView: UIView {
         if window != nil {
             _ = becomeFirstResponder()
         }
+        updateTypingViewport()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        if bounds.size != lastSurfaceSize {
+            lastSurfaceSize = bounds.size
+            endSelection()
+            onGeometryChange?()
+        }
         syncSize()
         sizeRenderLayers()
+        updateTypingViewport()
     }
 
     /// Keep ghostty's render sublayer(s) filling our bounds. ghostty adds an
@@ -161,7 +175,7 @@ final class TerminalSurfaceView: UIView {
         guard let sublayers = layer.sublayers, !sublayers.isEmpty else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for sub in sublayers {
+        for sub in sublayers where sub !== selectionView?.layer {
             sub.frame = bounds
         }
         CATransaction.commit()
@@ -179,6 +193,11 @@ final class TerminalSurfaceView: UIView {
         )
     }
 
+    let inputContext = TerminalInputContext()
+    weak var inputDelegate: UITextInputDelegate?
+    var markedTextStyle: [NSAttributedString.Key: Any]?
+    lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+
     // MARK: Focus / keyboard
 
     override var canBecomeFirstResponder: Bool { true }
@@ -186,21 +205,28 @@ final class TerminalSurfaceView: UIView {
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         if let surface { ghostty_surface_set_focus(surface, true) }
+        updateTypingViewport()
         return ok
     }
 
     override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
         if let surface { ghostty_surface_set_focus(surface, false) }
+        updateTypingViewport()
         return ok
     }
 
-    /// Whether the software keyboard (or the accessory bar when a hardware
-    /// keyboard is attached) is currently on screen.
+    /// Keep the cursor clear of the keyboard without resizing the terminal.
+    var followsCursorWhileTyping = false {
+        didSet { updateTypingViewport() }
+    }
+    var typingDisplayLink: CADisplayLink?
     private var keyboardVisible = false
+    /// Whether the software keyboard or hardware-keyboard accessory bar is visible.
+    var isKeyboardPresented: Bool { isFirstResponder && keyboardVisible }
 
-    @objc private func keyboardDidShow() { keyboardVisible = true }
-    @objc private func keyboardWillHide() { keyboardVisible = false }
+    @objc private func keyboardDidShow() { keyboardVisible = true; updateTypingViewport() }
+    @objc private func keyboardWillHide() { keyboardVisible = false; updateTypingViewport() }
 
     /// Bring the software keyboard back if the user dismissed it (e.g. with the
     /// iPadOS keyboard hide key, or the accessory bar's collapse button). The
@@ -236,7 +262,7 @@ final class TerminalSurfaceView: UIView {
 
     /// Perform a libghostty keybind action by name (e.g. "increase_font_size:1").
     @discardableResult
-    private func performBindingAction(_ action: String) -> Bool {
+    func performBindingAction(_ action: String) -> Bool {
         guard let surface else { return false }
         let len = action.utf8.count
         return action.withCString { ghostty_surface_binding_action(surface, $0, UInt(len)) }
@@ -412,6 +438,9 @@ final class TerminalSurfaceView: UIView {
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
             ghostty_surface_pty_data(surface, base, UInt(data.count))
         }
+        DispatchQueue.main.async { [weak self] in
+            if self?.selectionView?.isContentCurrent?() == false { self?.endSelection() }
+        }
     }
 
     // MARK: Outgoing input (terminal <- user)
@@ -421,6 +450,7 @@ final class TerminalSurfaceView: UIView {
     /// correct for a paste, WRONG for typing. Use `sendCharacter` for typed input.
     func sendText(_ text: String) {
         guard let surface, !text.isEmpty else { return }
+        onBeforeInput?()
         noteInputText(text)
         let len = text.utf8.count
         text.withCString { ptr in
@@ -436,6 +466,7 @@ final class TerminalSurfaceView: UIView {
     /// (CJK/emoji IME commits) falls back to the text path.
     func sendCharacter(_ text: String) {
         guard let surface, !text.isEmpty else { return }
+        onBeforeInput?()
         noteInputText(text)
         for ch in text {
             let s = String(ch)
@@ -479,7 +510,10 @@ final class TerminalSurfaceView: UIView {
         text: String? = nil
     ) {
         guard let surface else { return }
-        if action == .press { noteInputKey(key, mods: mods) }
+        if action == .press {
+            onBeforeInput?()
+            noteInputKey(key, mods: mods)
+        }
         let ev = Ghostty.KeyEvent(key: key, action: action, mods: mods, text: text)
         ev.withCValue { c in
             _ = ghostty_surface_key(surface, c)

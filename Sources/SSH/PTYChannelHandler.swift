@@ -16,26 +16,34 @@ final class PTYChannelHandler: ChannelDuplexHandler {
     private let term: String
     private var cols: Int
     private var rows: Int
+    private let command: String?
     /// Called with bytes received from the server. Invoked on the channel's
     /// event loop.
     private let onOutput: (ByteBuffer) -> Void
+    /// Called after the server accepts both the PTY and shell or exec request.
+    private var onReady: ((Result<Void, Error>) -> Void)?
     /// Called when the shell channel closes / errors.
     private let onClose: (Error?) -> Void
 
     private var context: ChannelHandlerContext?
     private var closeOnce = ChannelCloseOnce()
+    private var remoteCloseError: Error?
 
     init(
         term: String,
         cols: Int,
         rows: Int,
+        command: String? = nil,
         onOutput: @escaping (ByteBuffer) -> Void,
+        onReady: ((Result<Void, Error>) -> Void)? = nil,
         onClose: @escaping (Error?) -> Void
     ) {
         self.term = term
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
+        self.command = command
         self.onOutput = onOutput
+        self.onReady = onReady
         self.onClose = onClose
     }
 
@@ -60,14 +68,20 @@ final class PTYChannelHandler: ChannelDuplexHandler {
         )
         context.triggerUserOutboundEvent(ptyRequest, promise: nil)
 
-        let shellRequest = SSHChannelRequestEvent.ShellRequest(wantReply: true)
-        context.triggerUserOutboundEvent(shellRequest, promise: nil)
+        if let command {
+            let execRequest = SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true)
+            context.triggerUserOutboundEvent(execRequest, promise: nil)
+        } else {
+            let shellRequest = SSHChannelRequestEvent.ShellRequest(wantReply: true)
+            context.triggerUserOutboundEvent(shellRequest, promise: nil)
+        }
 
         context.fireChannelActive()
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        closeOnce.deliver(nil, to: onClose)
+        deliverReady(.failure(SSHExecError.disconnected))
+        closeOnce.deliver(remoteCloseError, to: onClose)
         context.fireChannelInactive()
     }
 
@@ -80,8 +94,34 @@ final class PTYChannelHandler: ChannelDuplexHandler {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        remoteCloseError = error
+        deliverReady(.failure(error))
         closeOnce.deliver(error, to: onClose)
         context.close(promise: nil)
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        switch event {
+        case is ChannelSuccessEvent where onReady != nil:
+            acknowledgedRequests += 1
+            if acknowledgedRequests == 2 { deliverReady(.success(())) }
+        case is ChannelFailureEvent where onReady != nil:
+            let error = SSHExecError.requestRejected
+            remoteCloseError = error
+            deliverReady(.failure(error))
+            context.close(promise: nil)
+        case let status as SSHChannelRequestEvent.ExitStatus:
+            guard status.exitStatus != 0 else { return }
+            let error = SSHExecError.nonZeroExitStatus(status: status.exitStatus, stderr: "")
+            remoteCloseError = error
+            deliverReady(.failure(error))
+        case let signal as SSHChannelRequestEvent.ExitSignal:
+            let error = SSHExecError.remoteSignal(name: signal.signalName, message: signal.errorMessage)
+            remoteCloseError = error
+            deliverReady(.failure(error))
+        default:
+            context.fireUserInboundEventTriggered(event)
+        }
     }
 
     /// Write outbound bytes to the server as channel data.
@@ -104,5 +144,13 @@ final class PTYChannelHandler: ChannelDuplexHandler {
             terminalPixelHeight: 0
         )
         context.triggerUserOutboundEvent(event, promise: nil)
+    }
+
+    private var acknowledgedRequests = 0
+
+    private func deliverReady(_ result: Result<Void, Error>) {
+        guard let onReady else { return }
+        self.onReady = nil
+        onReady(result)
     }
 }

@@ -4,10 +4,11 @@ import UIKit
 /// keyboard emits as text but which terminals expect as key events (newline,
 /// tab) into proper key events so ghostty encodes them correctly; everything
 /// else is sent as text.
-extension TerminalSurfaceView: UIKeyInput {
+extension TerminalSurfaceView {
     var hasText: Bool { true }
 
     func insertText(_ text: String) {
+        resetInputContext()
         // If a modifier is armed (e.g. Ctrl), encode each character as a key
         // event so combos like Ctrl-C produce the right control bytes.
         if !stickyMods.isEmpty {
@@ -36,7 +37,9 @@ extension TerminalSurfaceView: UIKeyInput {
     }
 
     func deleteBackward() {
-        sendKey(.backspace)
+        if deleteMarkedInput() { return }
+        consumeInputContext()
+        pressSpecial(.backspace)
     }
 }
 

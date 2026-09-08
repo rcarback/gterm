@@ -167,6 +167,52 @@ final class SSHSession: TerminalSession {
         forwardManager?.stop(id)
     }
 
+    // MARK: Command channels
+
+    /// Run a non-interactive command on a separate authenticated child channel.
+    /// Command bytes and output never pass through the interactive shell channel.
+    func execute(_ command: String) async throws -> String {
+        guard let channel, channel.isActive else { throw SSHExecError.notConnected }
+        let request = SSHExecOperation(parentChannel: channel, command: command, timeout: .seconds(10))
+        request.start()
+        return try await withTaskCancellationHandler(operation: {
+            try await request.result.get()
+        }, onCancel: {
+            request.cancel()
+        })
+    }
+
+    /// Open an interactive Screen attachment on its own PTY child channel.
+    /// The returned terminal is ready only after the server accepts both the
+    /// PTY allocation and exec request.
+    @MainActor
+    func openScreenTerminal(
+        command: String,
+        view: TerminalSurfaceView,
+        onClose: @escaping (Error?) -> Void
+    ) async throws -> ScreenTerminal {
+        guard let channel, channel.isActive else { throw SSHExecError.notConnected }
+        let gridSize = view.gridSize
+        let request = ScreenTerminalOpenOperation(
+            parentChannel: channel,
+            term: connection.term,
+            command: command,
+            view: view,
+            cols: gridSize.cols,
+            rows: gridSize.rows,
+            timeout: .seconds(10),
+            onClose: onClose
+        )
+        request.start()
+        let terminal = try await withTaskCancellationHandler(operation: {
+            try await request.result.get()
+        }, onCancel: {
+            request.cancel()
+        })
+        view.delegate = terminal
+        return terminal
+    }
+
     private func deliverOutput(_ buf: ByteBuffer) {
         guard let view else { return }
         var buf = buf
@@ -215,5 +261,205 @@ final class SSHSession: TerminalSession {
             return "\(sshError)"
         }
         return error.localizedDescription
+    }
+}
+
+/// Routes a dedicated Screen PTY without replacing the session's primary shell.
+final class ScreenTerminal: TerminalSurfaceViewDelegate, @unchecked Sendable {
+    private let childChannel: Channel
+    private weak var view: TerminalSurfaceView?
+    private var ptyHandler: PTYChannelHandler?
+    private let closeRelay: ScreenTerminalCloseRelay
+
+    init(childChannel: Channel, view: TerminalSurfaceView, onClose: @escaping (Error?) -> Void) {
+        self.childChannel = childChannel
+        self.view = view
+        self.closeRelay = ScreenTerminalCloseRelay(view: view, onClose: onClose)
+        self.closeRelay.terminal = self
+    }
+
+    func configure(
+        term: String,
+        command: String,
+        cols: Int,
+        rows: Int,
+        onReady: @escaping (Result<Void, Error>) -> Void
+    ) -> EventLoopFuture<Void> {
+        let handler = PTYChannelHandler(
+            term: term,
+            cols: cols,
+            rows: rows,
+            command: command,
+            onOutput: { [weak self] buffer in self?.deliverOutput(buffer) },
+            onReady: onReady,
+            onClose: { [closeRelay] error in closeRelay.deliver(error) }
+        )
+        ptyHandler = handler
+        return childChannel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).flatMap {
+            self.childChannel.pipeline.addHandler(handler)
+        }
+    }
+
+    func close() {
+        childChannel.eventLoop.execute {
+            self.childChannel.close(promise: nil)
+        }
+    }
+
+    func terminalSurface(_ view: TerminalSurfaceView, didProduceOutput data: Data) {
+        sendInput(data)
+    }
+
+    func sendInput(_ data: Data) {
+        var buffer = childChannel.allocator.buffer(capacity: data.count)
+        buffer.writeBytes(data)
+        childChannel.eventLoop.execute {
+            self.childChannel.writeAndFlush(buffer, promise: nil)
+        }
+    }
+
+    func terminalSurface(_ view: TerminalSurfaceView, didResizeToCols cols: Int, rows: Int) {
+        childChannel.eventLoop.execute {
+            self.ptyHandler?.sendWindowChange(cols: cols, rows: rows)
+        }
+    }
+
+    private func deliverOutput(_ buffer: ByteBuffer) {
+        var buffer = buffer
+        guard let bytes = buffer.readBytes(length: buffer.readableBytes) else { return }
+        view?.receive(Data(bytes))
+    }
+}
+
+private final class ScreenTerminalCloseRelay: @unchecked Sendable {
+    weak var terminal: ScreenTerminal?
+    private weak var view: TerminalSurfaceView?
+    private var onClose: ((Error?) -> Void)?
+
+    init(view: TerminalSurfaceView, onClose: @escaping (Error?) -> Void) {
+        self.view = view
+        self.onClose = onClose
+    }
+
+    func deliver(_ error: Error?) {
+        guard let onClose else { return }
+        self.onClose = nil
+        DispatchQueue.main.async { [weak self] in
+            if let terminal = self?.terminal, self?.view?.delegate === terminal {
+                self?.view?.delegate = nil
+            }
+            onClose(error)
+        }
+    }
+}
+
+private final class ScreenTerminalOpenOperation {
+    private let parentChannel: Channel
+    private let term: String
+    private let command: String
+    private let view: TerminalSurfaceView
+    private let cols: Int
+    private let rows: Int
+    private let timeout: TimeAmount
+    private let onClose: (Error?) -> Void
+    private let resultPromise: EventLoopPromise<ScreenTerminal>
+    private var terminal: ScreenTerminal?
+    private var childChannelOpened = false
+    private var requestsAccepted = false
+    private var timeoutTask: Scheduled<Void>?
+    private var completed = false
+
+    init(
+        parentChannel: Channel,
+        term: String,
+        command: String,
+        view: TerminalSurfaceView,
+        cols: Int,
+        rows: Int,
+        timeout: TimeAmount,
+        onClose: @escaping (Error?) -> Void
+    ) {
+        self.parentChannel = parentChannel
+        self.term = term
+        self.command = command
+        self.view = view
+        self.cols = cols
+        self.rows = rows
+        self.timeout = timeout
+        self.onClose = onClose
+        self.resultPromise = parentChannel.eventLoop.makePromise(of: ScreenTerminal.self)
+    }
+
+    var result: EventLoopFuture<ScreenTerminal> { resultPromise.futureResult }
+
+    func start() {
+        parentChannel.eventLoop.execute {
+            guard !self.completed else { return }
+            self.timeoutTask = self.parentChannel.eventLoop.scheduleTask(in: self.timeout) {
+                self.finish(.failure(SSHExecError.timedOut))
+            }
+            self.parentChannel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { lookup in
+                switch lookup {
+                case .failure(let error):
+                    self.finish(.failure(SSHExecError.channelOpenFailed(error.localizedDescription)))
+                case .success(let sshHandler):
+                    let channelPromise = self.parentChannel.eventLoop.makePromise(of: Channel.self)
+                    sshHandler.createChannel(channelPromise, channelType: .session) { child, _ in
+                        let terminal = ScreenTerminal(childChannel: child, view: self.view, onClose: self.onClose)
+                        self.terminal = terminal
+                        if self.completed {
+                            child.close(promise: nil)
+                            return child.eventLoop.makeFailedFuture(SSHExecError.cancelled)
+                        }
+                        return terminal.configure(
+                            term: self.term,
+                            command: self.command,
+                            cols: self.cols,
+                            rows: self.rows
+                        ) { [weak self] ready in
+                            guard let self else { return }
+                            switch ready {
+                            case .success:
+                                self.requestsAccepted = true
+                                self.succeedIfReady()
+                            case .failure(let error):
+                                self.finish(.failure(error))
+                            }
+                        }
+                    }
+                    channelPromise.futureResult.whenComplete { opened in
+                        switch opened {
+                        case .failure(let error):
+                            self.finish(.failure(SSHExecError.channelOpenFailed(error.localizedDescription)))
+                        case .success:
+                            self.childChannelOpened = true
+                            self.succeedIfReady()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func cancel() {
+        finish(.failure(SSHExecError.cancelled))
+    }
+
+    private func succeedIfReady() {
+        guard childChannelOpened, requestsAccepted, let terminal else { return }
+        finish(.success(terminal))
+    }
+
+    private func finish(_ result: Result<ScreenTerminal, Error>) {
+        guard parentChannel.eventLoop.inEventLoop else {
+            parentChannel.eventLoop.execute { self.finish(result) }
+            return
+        }
+        guard !completed else { return }
+        completed = true
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        if case .failure = result { terminal?.close() }
+        resultPromise.completeWith(result)
     }
 }
