@@ -132,6 +132,7 @@ targets:
       - path: Sources/SSH/PTYChannelHandler.swift
       - path: Sources/Screen
       - path: Sources/Terminal/TerminalTapMovement.swift
+      - path: Sources/Terminal/SessionRecovery.swift
       - path: Sources/SSH/SessionStateNotifier.swift
       - path: Sources/SSH/SSHPort.swift
       - path: Sources/Model/SavedConnection.swift
@@ -164,7 +165,9 @@ targets:
     sources:
       - path: Sources/Screen
       - path: Sources/Terminal/TerminalTapMovement.swift
+      - path: Sources/Terminal/SessionRecovery.swift
       - path: Tests/TerminalTapMovementTests.swift
+      - path: Tests/SessionRecoveryTests.swift
       - path: Sources/SSH/SSHExecHandler.swift
       - path: Sources/SSH/PTYChannelHandler.swift
       - path: Sources/SSH/ChannelCloseOnce.swift

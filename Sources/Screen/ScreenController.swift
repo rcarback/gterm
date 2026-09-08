@@ -15,6 +15,8 @@ final class ScreenController: ObservableObject {
     private let closeTerminal: () -> Void
     private var generation = 0
     private var polling = false
+    private var resumeTarget: (sessionID: String, window: Int?)?
+    var hasInterruptedAttachment: Bool { resumeTarget != nil }
 
     var selectedWindow: ScreenWindow? { windows.first(where: \.selected) }
     var canAct: Bool { sessionID != nil && !busy && !stale }
@@ -93,6 +95,7 @@ final class ScreenController: ObservableObject {
     }
 
     func detach() {
+        resumeTarget = nil
         generation += 1
         closeTerminal()
         sessionID = nil
@@ -102,8 +105,32 @@ final class ScreenController: ObservableObject {
     }
 
     func terminalClosed(_ error: Error?) {
-        detach()
+        connectionInterrupted()
         if let error { errorMessage = "Screen terminal closed: " + error.localizedDescription }
+    }
+
+    func connectionInterrupted() {
+        let target = sessionID.map { (sessionID: $0, window: selectedWindow?.number) } ?? resumeTarget
+        detach()
+        resumeTarget = target
+    }
+
+    func restoreInterruptedAttachment() async {
+        guard !busy, sessionID == nil, let target = resumeTarget else { return }
+        let token = generation
+        await discover()
+        guard token == generation, errorMessage == nil else { return }
+        guard let session = sessions.first(where: { $0.id == target.sessionID }) else {
+            resumeTarget = nil
+            errorMessage = "The previous Screen session has ended. Choose another session."
+            return
+        }
+        await attach(session)
+        guard sessionID == target.sessionID else { return }
+        resumeTarget = nil
+        if let window = target.window, windows.contains(where: { $0.number == window }), selectedWindow?.number != window {
+            await select(window)
+        }
     }
 
     func refresh(background: Bool = false) async {

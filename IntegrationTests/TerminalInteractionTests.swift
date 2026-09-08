@@ -8,6 +8,21 @@ import GhosttyKit
 final class TerminalInteractionTests: XCTestCase {
     private static let ghostty = Ghostty.App()
 
+    func testSSHStopCanBeAwaitedRepeatedly() async {
+        let surface = TerminalSurfaceView(ghostty: Self.ghostty)
+        let ssh = SSHSession(connection: SSHConnection(host: "127.0.0.1", username: "test"),
+                             view: surface, onStateChange: { _ in })
+        ssh.stop()
+        async let first: Void = ssh.stopAndWait()
+        async let second: Void = ssh.stopAndWait()
+        _ = await (first, second)
+        await ssh.stopAndWait()
+        do {
+            try await ssh.checkConnection()
+            XCTFail("Stopped SSH connection must fail the health check")
+        } catch { XCTAssertEqual(error.localizedDescription, SSHExecError.notConnected.localizedDescription) }
+    }
+
     func testTypingScrollsOnlyEnoughToKeepCursorAboveKeyboard() async throws {
         try await verifyTypingViewport(controlsVisible: true)
     }

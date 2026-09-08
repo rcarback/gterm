@@ -19,6 +19,11 @@ final class SSHSession: TerminalSession {
     private var childChannel: Channel?
     private var ptyHandler: PTYChannelHandler?
 
+    private let stopLock = NSLock()
+    private var stopStarted = false
+    private var stopFinished = false
+    private var stopCompletions: [() -> Void] = []
+
     private var forwardManager: PortForwardManager?
     private let forwards: [PortForward]
     private let onForwardChange: ((UUID, PortForwardStatus) -> Void)?
@@ -64,13 +69,30 @@ final class SSHSession: TerminalSession {
     }
 
     func stop() {
+        beginStop()
+    }
+
+    func stopAndWait() async {
+        await withCheckedContinuation { continuation in
+            beginStop { continuation.resume() }
+        }
+    }
+
+    private func beginStop(completion: (() -> Void)? = nil) {
         lifecycle.setStopped(true)
-        let group = self.group
-        // Close port-forward listeners + tunnels FIRST and wait for them to be
-        // fully released, THEN close the channels and shut the group down. Shutting
-        // the group down concurrently can leave a listener lingering bound, so the
-        // next session's bind fails with EADDRINUSE.
-        let cleanup = forwardManager?.stopAll() ?? group.next().makeSucceededVoidFuture()
+        stopLock.lock()
+        if stopFinished {
+            stopLock.unlock()
+            completion?()
+            return
+        }
+        if let completion { stopCompletions.append(completion) }
+        guard !stopStarted else {
+            stopLock.unlock()
+            return
+        }
+        stopStarted = true
+        let manager = forwardManager
         forwardManager = nil
         let child = childChannel
         let transport = self.transport
@@ -78,11 +100,35 @@ final class SSHSession: TerminalSession {
         childChannel = nil
         channel = nil
         ptyHandler = nil
+        stopLock.unlock()
+
+        let group = self.group
+        // Close port-forward listeners + tunnels FIRST and wait for them to be
+        // fully released, THEN close the channels and shut the group down. Shutting
+        // the group down concurrently can leave a listener lingering bound, so the
+        // next session's bind fails with EADDRINUSE.
+        let cleanup = manager?.stopAll() ?? group.next().makeSucceededVoidFuture()
         cleanup.whenComplete { _ in
-            child?.close(promise: nil)
+            let childClosed = child?.close().recover { _ in () }
+                ?? group.next().makeSucceededVoidFuture()
             let closed = transport?.close() ?? group.next().makeSucceededVoidFuture()
-            closed.whenComplete { _ in group.shutdownGracefully { _ in } }
+            EventLoopFuture.andAllComplete([childClosed, closed], on: group.next()).whenComplete { _ in
+                group.shutdownGracefully { [self] _ in finishStop() }
+            }
         }
+    }
+
+    private func finishStop() {
+        stopLock.lock()
+        guard !stopFinished else {
+            stopLock.unlock()
+            return
+        }
+        stopFinished = true
+        let completions = stopCompletions
+        stopCompletions.removeAll()
+        stopLock.unlock()
+        for completion in completions { completion() }
     }
 
     // MARK: Open the PTY shell child channel
@@ -137,6 +183,12 @@ final class SSHSession: TerminalSession {
                         _ = self.transport?.close()
                         self.lifecycle.notify(.failed(Self.describe(error)))
                     case .success(let childChannel):
+                        self.stopLock.lock()
+                        guard !self.stopStarted else {
+                            self.stopLock.unlock()
+                            childChannel.close(promise: nil)
+                            return
+                        }
                         self.childChannel = childChannel
                         // The parent `channel` is the authenticated connection;
                         // the forward manager reuses it and the shared group.
@@ -147,6 +199,7 @@ final class SSHSession: TerminalSession {
                         )
                         self.forwardManager = mgr
                         for f in self.forwards where f.autoStart { mgr.start(f) }
+                        self.stopLock.unlock()
                         self.lifecycle.notify(.connected)
                     }
                 }
@@ -172,8 +225,16 @@ final class SSHSession: TerminalSession {
     /// Run a non-interactive command on a separate authenticated child channel.
     /// Command bytes and output never pass through the interactive shell channel.
     func execute(_ command: String) async throws -> String {
+        try await execute(command, timeout: .seconds(10))
+    }
+
+    func checkConnection() async throws {
+        _ = try await execute("true", timeout: .seconds(3))
+    }
+
+    private func execute(_ command: String, timeout: TimeAmount) async throws -> String {
         guard let channel, channel.isActive else { throw SSHExecError.notConnected }
-        let request = SSHExecOperation(parentChannel: channel, command: command, timeout: .seconds(10))
+        let request = SSHExecOperation(parentChannel: channel, command: command, timeout: timeout)
         request.start()
         return try await withTaskCancellationHandler(operation: {
             try await request.result.get()
