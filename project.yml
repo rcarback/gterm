@@ -135,3 +135,25 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermTests
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
+
+  gtermLinkTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: IntegrationTests/TerminalLinkTests.swift
+    dependencies:
+      - target: gterm
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/gterm.app/gterm
+        BUNDLE_LOADER: $(TEST_HOST)
+
+schemes:
+  LinkValidation:
+    build:
+      targets:
+        gterm: all
+    test:
+      targets:
+        - gtermLinkTests
