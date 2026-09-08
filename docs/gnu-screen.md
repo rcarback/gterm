@@ -79,6 +79,13 @@ Use the Screens icon to return to your original shell.
 Both actions close only the app's terminal channel.
 Other attached displays stay connected.
 
+When you return to the app, it checks the SSH link.
+It keeps a working link and replaces a lost link.
+Screen mode restores the same session and window if they still exist.
+Enabled port forwards restart after the old connection finishes closing.
+A plain terminal opens a new shell after reconnecting.
+If recovery fails, use **Refresh Screen** or **Reconnect** to retry.
+
 ## Host requirements
 
 Run Screen as the same user on the same host.

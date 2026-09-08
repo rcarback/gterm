@@ -4,6 +4,46 @@ import Combine
 
 @MainActor
 final class ScreenControllerTests: XCTestCase {
+    func testInterruptedAttachmentReturnsToSameSession() async {
+        var opens = 0
+        let model = ScreenController(execute: { command in
+            if command.contains(ScreenProtocol.listCommand) { return screenList(("12.work", "Attached")) }
+            return screenReply(command)
+        }, attach: { _ in opens += 1 }, detach: {})
+        await model.attach(ScreenSessionInfo(id: "12.work", isDetached: false))
+        model.connectionInterrupted()
+        XCTAssertNil(model.sessionID)
+        XCTAssertTrue(model.hasInterruptedAttachment)
+        await model.restoreInterruptedAttachment()
+        XCTAssertEqual(model.sessionID, "12.work")
+        XCTAssertEqual(opens, 2)
+        XCTAssertFalse(model.hasInterruptedAttachment)
+    }
+
+    func testExplicitDetachClearsInterruptedAttachment() async {
+        let model = ScreenController(execute: { screenReply($0) }, attach: { _ in }, detach: {})
+        await model.attach(ScreenSessionInfo(id: "12.work", isDetached: false))
+        model.connectionInterrupted()
+        model.detach()
+        await model.restoreInterruptedAttachment()
+        XCTAssertNil(model.sessionID)
+        XCTAssertFalse(model.hasInterruptedAttachment)
+    }
+
+    func testMissingPreviousSessionDoesNotAttachAnotherSession() async {
+        var opens = 0
+        let model = ScreenController(execute: { command in
+            if command.contains(ScreenProtocol.listCommand) { return screenList(("99.other", "Attached")) }
+            return screenReply(command)
+        }, attach: { _ in opens += 1 }, detach: {})
+        await model.attach(ScreenSessionInfo(id: "12.work", isDetached: false))
+        model.terminalClosed(nil)
+        await model.restoreInterruptedAttachment()
+        XCTAssertNil(model.sessionID)
+        XCTAssertEqual(opens, 1)
+        XCTAssertNotNil(model.errorMessage)
+    }
+
     func testDiscoverAndAttachAttachesOnlySession() async {
         var attachmentCommand: String?
         let model = ScreenController(execute: { command in

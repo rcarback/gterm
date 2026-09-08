@@ -84,7 +84,7 @@ struct TerminalScreen: View {
         .onChange(of: session.state) { _, newState in
             // A clean remote close (e.g. `exit` in the shell) dismisses the
             // terminal; failures keep the screen up so the error stays readable.
-            if newState == .closed { onClose() }
+            if newState == .closed, !session.isRecoveringConnection { onClose() }
         }
         .alert(
             session.hostKeyRequest?.prompt.kind == .changed ? "Host Key Changed" : "Unknown Host",
@@ -145,6 +145,13 @@ struct TerminalScreen: View {
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
             Spacer()
+            if !session.isAlive {
+                Button { Task { await session.reconnect() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("Reconnect")
+                .disabled(session.isRecoveringConnection)
+            }
             Button {
                 _ = session.surface.resignFirstResponder()
                 showingScreen = true

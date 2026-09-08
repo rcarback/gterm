@@ -229,8 +229,7 @@ struct ScreenModeView: View {
                     }
                     Button {
                         Task {
-                            if controller.sessionID == nil { await controller.discover() }
-                            else { await controller.refresh() }
+                            await refreshScreen(reconnectIfNeeded: true)
                         }
                     } label: { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel("Refresh Screen")
@@ -270,11 +269,7 @@ struct ScreenModeView: View {
         .preferredColorScheme(.dark)
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
-            if controller.sessionID != nil { await controller.refresh() }
-            else if !openedInitialSession {
-                openedInitialSession = true
-                await controller.discoverAndAttachIfOnlySession()
-            } else { await controller.discover() }
+            await refreshScreen(reconnectIfNeeded: false)
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(2)) }
                 catch { return }
@@ -284,8 +279,12 @@ struct ScreenModeView: View {
                 }
             }
         }
+        .onChange(of: session.state) { _, state in
+            if state != .connected { controller.connectionInterrupted() }
+        }
         .onDisappear {
-            controller.detach()
+            if scenePhase != .active { controller.connectionInterrupted() }
+            else if browsing == nil { controller.detach() }
         }
         .sheet(isPresented: $showWindowList, onDismiss: {
             _ = attachment.surface?.becomeFirstResponder()
@@ -351,6 +350,29 @@ struct ScreenModeView: View {
             Button("Cancel", role: .cancel) { closeWindow = nil }
         } message: {
             Text("Closing a window terminates its running program. Closing the last window ends the Screen session.")
+        }
+    }
+
+    private func refreshScreen(reconnectIfNeeded: Bool) async {
+        if reconnectIfNeeded, session.state != .connected {
+            await session.reconnect()
+        } else {
+            await session.resumeAfterBackground()
+        }
+        guard !Task.isCancelled else { return }
+        guard session.state == .connected else {
+            controller.errorMessage = "Connection lost. Tap Refresh to reconnect."
+            return
+        }
+        if controller.hasInterruptedAttachment {
+            await controller.restoreInterruptedAttachment()
+        } else if controller.sessionID != nil {
+            await controller.refresh()
+        } else if !openedInitialSession {
+            openedInitialSession = true
+            await controller.discoverAndAttachIfOnlySession()
+        } else {
+            await controller.discover()
         }
     }
 
