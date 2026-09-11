@@ -363,7 +363,7 @@ final class ScreenTerminal: TerminalSurfaceViewDelegate, @unchecked Sendable {
             term: term,
             cols: cols,
             rows: rows,
-            command: command,
+            start: .exec(command),
             onOutput: { [weak self] buffer in self?.deliverOutput(buffer) },
             onReady: onReady,
             onClose: { [closeRelay] error in closeRelay.deliver(error) }
