@@ -145,6 +145,19 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
 
+  gtermLinkTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: IntegrationTests/TerminalLinkTests.swift
+    dependencies:
+      - target: gterm
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/gterm.app/gterm
+        BUNDLE_LOADER: $(TEST_HOST)
+
   # Runs real shell-startup regressions on macOS as well as SSH channel tests.
   # Process is unavailable on iOS, so these tests need a host-side bundle.
   gtermSSHTests:
@@ -167,3 +180,12 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermSSHTests
         GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  LinkValidation:
+    build:
+      targets:
+        gterm: all
+    test:
+      targets:
+        - gtermLinkTests
