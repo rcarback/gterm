@@ -18,9 +18,23 @@ connection via a custom **passthru IO backend** added to libghostty. See
 - ✅ SSH transport (swift-nio-ssh): password auth, PTY shell, window-change
 - ✅ Custom on-screen keyboard (esc/ctrl/alt/tab/arrows/symbols, sticky mods)
 - ✅ Saved connections (Keychain passwords) + trust-on-first-use host keys
-- ✅ Public-key auth: a Keys tab to import Ed25519/ECDSA keys (stored in the
-  Keychain, device-only); each host can select one or more keys to try
-- ⏳ Encrypted (passphrase) keys, RSA, richer settings (font/theme)
+- ✅ Public-key auth: generate Ed25519/RSA keys and import Ed25519/ECDSA/RSA
+  keys in the Keys tab. Keys stay in device-only Keychain storage. Each host can
+  select one or more keys to try.
+- ⏳ Encrypted (passphrase) keys, richer settings (font/theme)
+
+## Generate an SSH key
+
+Open **Keys → + → Generate Key** to create an Ed25519 or RSA key on your device.
+For RSA, enter 2048–32768 bits in multiples of 128. The default is
+3072. Custom sizes including 8192 and larger are accepted. Larger keys take
+longer to generate. The screen stays responsive while generation runs.
+Copy or share its public key, add it to your server's `authorized_keys`, then
+select the key on a saved host. The private key stays in device-only Keychain
+storage. Keep another way to access your servers if the device is lost.
+
+See [on-device key generation](docs/on-device-key-generation-plan.md) for storage
+and test details.
 
 ## Building
 

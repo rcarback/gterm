@@ -65,11 +65,14 @@ final class SSHSession: TerminalSession {
 
         // Build authentication offers in preference order: private key (if
         // provided), then password (if provided). Skip keys that fail to parse
-        // so one RSA/encrypted key does not block a good key or password.
+        // so one malformed/encrypted key does not block a good key or password.
         var offers: [NIOSSHUserAuthenticationOffer.Offer] = []
         let parsed = SSHKeyParser.parseUsable(connection.privateKeys)
         for item in parsed.keys {
             offers.append(.privateKey(.init(privateKey: item.key)))
+            if item.type.hasPrefix("RSA ") {
+                offers.append(.privateKey(.init(privateKey: item.key, rsaSignatureAlgorithm: .sha256)))
+            }
         }
         if !connection.password.isEmpty {
             offers.append(.password(.init(password: connection.password)))

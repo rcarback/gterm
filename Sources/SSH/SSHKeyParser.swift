@@ -1,5 +1,6 @@
 import Foundation
 import Crypto
+import _CryptoExtras
 import NIOCore
 import NIOSSH
 
@@ -12,7 +13,7 @@ enum SSHKeyError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .unsupportedType(let t):
-            return "Unsupported key type \"\(t)\". gterm supports Ed25519 and ECDSA (P-256/384/521); RSA is not supported."
+            return "Unsupported key type \"\(t)\". gterm supports Ed25519, ECDSA (P-256/384/521), and RSA (2048 bits or larger)."
         case .encrypted:
             return "This private key is passphrase-encrypted, which isn't supported yet. Remove the passphrase with `ssh-keygen -p -f <key>` and re-import."
         case .malformed(let why):
@@ -29,8 +30,8 @@ struct ParsedKey {
     let type: String
 }
 
-/// Parses SSH private keys (modern OpenSSH format and ECDSA PEM) into a
-/// `NIOSSHPrivateKey`. Supports Ed25519 and ECDSA P-256/384/521, unencrypted.
+/// Parses SSH private keys (modern OpenSSH format and PEM) into a
+/// `NIOSSHPrivateKey`. Supports Ed25519, ECDSA P-256/384/521, and RSA, unencrypted.
 enum SSHKeyParser {
     static func parse(_ text: String) throws -> ParsedKey {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -39,14 +40,15 @@ enum SSHKeyParser {
         if trimmed.contains("BEGIN OPENSSH PRIVATE KEY") {
             return try parseOpenSSH(trimmed)
         }
-        if trimmed.contains("BEGIN RSA PRIVATE KEY") {
-            throw SSHKeyError.unsupportedType("ssh-rsa")
-        }
         if trimmed.contains("ENCRYPTED") {
             throw SSHKeyError.encrypted
         }
+        if trimmed.contains("BEGIN RSA PRIVATE KEY") {
+            do { return try rsaKey(_RSA.Signing.PrivateKey(pemRepresentation: trimmed)) }
+            catch { throw SSHKeyError.malformed("invalid RSA private key") }
+        }
         if trimmed.contains("BEGIN EC PRIVATE KEY") || trimmed.contains("BEGIN PRIVATE KEY") {
-            return try parsePEMECDSA(trimmed)
+            return try parsePEM(trimmed)
         }
         if trimmed.contains("PUBLIC KEY") || trimmed.hasPrefix("ssh-") || trimmed.hasPrefix("ecdsa-") {
             throw SSHKeyError.notAPrivateKey
@@ -132,6 +134,15 @@ enum SSHKeyParser {
             let scalar = try readData(&priv)
             return try ecdsaKey(type: keytype, scalar: scalar)
 
+        case "ssh-rsa":
+            let n = try readPositiveInteger(&priv)
+            let e = try readPositiveInteger(&priv)
+            let d = try readPositiveInteger(&priv)
+            _ = try readPositiveInteger(&priv) // iqmp; Crypto computes CRT values from p and q.
+            let p = try readPositiveInteger(&priv)
+            let q = try readPositiveInteger(&priv)
+            return try rsaKey(_RSA.Signing.PrivateKey(n: n, e: e, d: d, p: p, q: q))
+
         default:
             throw SSHKeyError.unsupportedType(keytype)
         }
@@ -162,9 +173,25 @@ enum SSHKeyParser {
         }
     }
 
-    // MARK: PEM (ECDSA only; Ed25519 PEM isn't supported by swift-crypto)
+    private static func rsaKey(_ key: _RSA.Signing.PrivateKey) throws -> ParsedKey {
+        guard key.keySizeInBits >= 2048 else { throw SSHKeyError.malformed("RSA keys must be at least 2048 bits") }
+        return ParsedKey(key: NIOSSHPrivateKey(rsaKey: key), type: "RSA \(key.keySizeInBits)")
+    }
 
-    private static func parsePEMECDSA(_ pem: String) throws -> ParsedKey {
+    private static func readPositiveInteger(_ buffer: inout ByteBuffer) throws -> Data {
+        var bytes = try readData(&buffer)
+        guard let first = bytes.first, first & 0x80 == 0 else { throw SSHKeyError.malformed("invalid RSA integer") }
+        while bytes.first == 0 { bytes.removeFirst() }
+        guard !bytes.isEmpty else { throw SSHKeyError.malformed("zero RSA integer") }
+        return Data(bytes)
+    }
+
+    // MARK: PEM (ECDSA and RSA)
+
+    private static func parsePEM(_ pem: String) throws -> ParsedKey {
+        if let key = try? _RSA.Signing.PrivateKey(pemRepresentation: pem) {
+            return try rsaKey(key)
+        }
         if let k = try? P256.Signing.PrivateKey(pemRepresentation: pem) {
             return ParsedKey(key: NIOSSHPrivateKey(p256Key: k), type: "ECDSA P-256")
         }
@@ -174,7 +201,7 @@ enum SSHKeyParser {
         if let k = try? P521.Signing.PrivateKey(pemRepresentation: pem) {
             return ParsedKey(key: NIOSSHPrivateKey(p521Key: k), type: "ECDSA P-521")
         }
-        throw SSHKeyError.malformed("unsupported PEM key (only ECDSA P-256/384/521 PEM is supported)")
+        throw SSHKeyError.malformed("unsupported PEM key (expected ECDSA or RSA PEM)")
     }
 
     // MARK: SSH wire readers
