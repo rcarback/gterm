@@ -199,15 +199,23 @@ final class SSHExecHandlerTests: XCTestCase {
             term: "xterm-256color",
             cols: 80,
             rows: 24,
-            command: "screen -x session",
+            start: .exec("screen -x session"),
             onOutput: { _ in },
             onReady: { ready.append($0) },
             onClose: { _ in }
         )
-        let channel = EmbeddedChannel(handler: handler)
+        let recorder = PTYRequestRecorder()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.addHandlers(recorder, handler).wait()
+        // Activation sends the PTY request; the program request only follows
+        // once the server acknowledges it.
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 22)).wait()
+        XCTAssertEqual(recorder.events.count, 1)
+        XCTAssertTrue(recorder.events.first is SSHChannelRequestEvent.PseudoTerminalRequest)
 
         channel.pipeline.fireUserInboundEventTriggered(ChannelSuccessEvent())
         XCTAssertTrue(ready.isEmpty)
+        XCTAssertTrue(recorder.events.last is SSHChannelRequestEvent.ExecRequest)
         channel.pipeline.fireUserInboundEventTriggered(ChannelSuccessEvent())
         channel.embeddedEventLoop.run()
 
@@ -223,7 +231,7 @@ final class SSHExecHandlerTests: XCTestCase {
             term: "xterm-256color",
             cols: 80,
             rows: 24,
-            command: "screen -x missing",
+            start: .exec("screen -x missing"),
             onOutput: { _ in },
             onReady: { _ in },
             onClose: {
@@ -231,7 +239,9 @@ final class SSHExecHandlerTests: XCTestCase {
                 closeCount += 1
             }
         )
-        let channel = EmbeddedChannel(handler: handler)
+        let channel = EmbeddedChannel()
+        try channel.pipeline.addHandlers(PTYRequestRecorder(), handler).wait()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 22)).wait()
 
         channel.pipeline.fireUserInboundEventTriggered(ChannelSuccessEvent())
         channel.pipeline.fireUserInboundEventTriggered(ChannelSuccessEvent())
@@ -391,5 +401,18 @@ private final class ExecRequestCounter: ChannelInboundHandler {
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if event is SSHChannelRequestEvent.ExecRequest { onRequest() }
         context.fireUserInboundEventTriggered(event)
+    }
+}
+
+/// Stands in for the SSH child channel: records the requests the PTY handler
+/// sends and completes their write promises. Without this the promises stay
+/// pending and `EmbeddedChannel.finish()` fails them, closing the channel.
+private final class PTYRequestRecorder: ChannelOutboundHandler {
+    typealias OutboundIn = SSHChannelData
+    private(set) var events: [Any] = []
+
+    func triggerUserOutboundEvent(context: ChannelHandlerContext, event: Any, promise: EventLoopPromise<Void>?) {
+        events.append(event)
+        promise?.succeed(())
     }
 }

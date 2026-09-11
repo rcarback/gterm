@@ -1,9 +1,10 @@
+import Foundation
 import NIOCore
 import NIOSSH
 
-/// Handles a single SSH "session" child channel running an interactive shell on
-/// a PTY. On activation it requests a pseudo-terminal and a shell, then pipes
-/// raw bytes both ways:
+/// Handles a single SSH "session" child channel running an interactive PTY.
+/// On activation it requests a pseudo-terminal, then either a login shell or
+/// an exec (e.g. `herdr` or `screen`), and pipes raw bytes both ways:
 ///   * inbound  SSHChannelData (server stdout/stderr) -> onOutput (to terminal)
 ///   * outbound bytes (keyboard/responses)            -> SSHChannelData (write)
 /// Window resizes are sent as window-change requests.
@@ -16,24 +17,45 @@ final class PTYChannelHandler: ChannelDuplexHandler {
     private let term: String
     private var cols: Int
     private var rows: Int
-    private let command: String?
     /// Called with bytes received from the server. Invoked on the channel's
     /// event loop.
     private let onOutput: (ByteBuffer) -> Void
-    /// Called after the server accepts both the PTY and shell or exec request.
+    /// Called once the server has accepted both the PTY and the program, or
+    /// with the first failure if it never gets that far.
     private var onReady: ((Result<Void, Error>) -> Void)?
     /// Called when the shell channel closes / errors.
     private let onClose: (Error?) -> Void
+    /// Login shell vs exec (e.g. `herdr`). Mapped by `HerdrSupport.ptyStart`.
+    private let start: HerdrSupport.PTYStart
 
     private var context: ChannelHandlerContext?
     private var closeOnce = ChannelCloseOnce()
-    private var remoteCloseError: Error?
+    /// The PTY and the program are requested one after the other so a rejection
+    /// names the request that failed.
+    private enum StartupState {
+        case idle, awaitingPTY, awaitingProgram, running, closed
+    }
+    private var startupState = StartupState.idle
+    /// Reported to `onClose` when the channel goes inactive. Nil for a clean exit.
+    private var exitError: Error?
+
+    private enum StartupError: LocalizedError {
+        case ptyRejected
+        case programRejected
+
+        var errorDescription: String? {
+            switch self {
+            case .ptyRejected: return "The SSH server rejected the terminal request."
+            case .programRejected: return "The SSH server rejected the shell or program startup request."
+            }
+        }
+    }
 
     init(
         term: String,
         cols: Int,
         rows: Int,
-        command: String? = nil,
+        start: HerdrSupport.PTYStart = .loginShell,
         onOutput: @escaping (ByteBuffer) -> Void,
         onReady: ((Result<Void, Error>) -> Void)? = nil,
         onClose: @escaping (Error?) -> Void
@@ -41,7 +63,7 @@ final class PTYChannelHandler: ChannelDuplexHandler {
         self.term = term
         self.cols = max(cols, 1)
         self.rows = max(rows, 1)
-        self.command = command
+        self.start = start
         self.onOutput = onOutput
         self.onReady = onReady
         self.onClose = onClose
@@ -56,7 +78,7 @@ final class PTYChannelHandler: ChannelDuplexHandler {
     }
 
     func channelActive(context: ChannelHandlerContext) {
-        // Request a PTY, then a shell. wantReply so we learn of failures.
+        // Request a PTY, then a login shell or exec. wantReply so we learn of failures.
         let ptyRequest = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
             term: term,
@@ -66,22 +88,68 @@ final class PTYChannelHandler: ChannelDuplexHandler {
             terminalPixelHeight: 0,
             terminalModes: SSHTerminalModes([.ECHO: 1, .ICANON: 1, .ISIG: 1])
         )
-        context.triggerUserOutboundEvent(ptyRequest, promise: nil)
-
-        if let command {
-            let execRequest = SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true)
-            context.triggerUserOutboundEvent(execRequest, promise: nil)
-        } else {
-            let shellRequest = SSHChannelRequestEvent.ShellRequest(wantReply: true)
-            context.triggerUserOutboundEvent(shellRequest, promise: nil)
-        }
-
+        startupState = .awaitingPTY
+        sendRequest(ptyRequest, context: context)
         context.fireChannelActive()
     }
 
+    private func startProgram(context: ChannelHandlerContext) {
+        startupState = .awaitingProgram
+        switch start {
+        case .loginShell:
+            let shellRequest = SSHChannelRequestEvent.ShellRequest(wantReply: true)
+            sendRequest(shellRequest, context: context)
+        case .exec(let command):
+            let execRequest = SSHChannelRequestEvent.ExecRequest(command: command, wantReply: true)
+            sendRequest(execRequest, context: context)
+        }
+    }
+
+    private func sendRequest(_ event: Any, context: ChannelHandlerContext) {
+        // This promise only confirms the write. Server acceptance arrives as
+        // ChannelSuccessEvent / ChannelFailureEvent on the inbound pipeline.
+        let promise = context.eventLoop.makePromise(of: Void.self)
+        promise.futureResult.whenFailure { [weak self] error in
+            self?.errorCaught(context: context, error: error)
+        }
+        context.triggerUserOutboundEvent(event, promise: promise)
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        switch event {
+        case is ChannelSuccessEvent:
+            switch startupState {
+            case .awaitingPTY: startProgram(context: context)
+            case .awaitingProgram:
+                startupState = .running
+                deliverReady(.success(()))
+            default: break
+            }
+        case is ChannelFailureEvent:
+            switch startupState {
+            case .awaitingPTY: errorCaught(context: context, error: StartupError.ptyRejected)
+            case .awaitingProgram: errorCaught(context: context, error: StartupError.programRejected)
+            default: break
+            }
+        case let status as SSHChannelRequestEvent.ExitStatus:
+            guard status.exitStatus != 0 else { return }
+            let error = SSHExecError.nonZeroExitStatus(status: status.exitStatus, stderr: "")
+            exitError = error
+            deliverReady(.failure(error))
+            // Keep receiving trailing stderr until the server closes.
+        case let signal as SSHChannelRequestEvent.ExitSignal:
+            let error = SSHExecError.remoteSignal(name: signal.signalName, message: signal.errorMessage)
+            exitError = error
+            deliverReady(.failure(error))
+        default:
+            context.fireUserInboundEventTriggered(event)
+        }
+    }
+
     func channelInactive(context: ChannelHandlerContext) {
+        startupState = .closed
         deliverReady(.failure(SSHExecError.disconnected))
-        closeOnce.deliver(remoteCloseError, to: onClose)
+        closeOnce.deliver(exitError, to: onClose)
         context.fireChannelInactive()
     }
 
@@ -94,34 +162,10 @@ final class PTYChannelHandler: ChannelDuplexHandler {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        remoteCloseError = error
+        startupState = .closed
         deliverReady(.failure(error))
         closeOnce.deliver(error, to: onClose)
         context.close(promise: nil)
-    }
-
-    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        switch event {
-        case is ChannelSuccessEvent where onReady != nil:
-            acknowledgedRequests += 1
-            if acknowledgedRequests == 2 { deliverReady(.success(())) }
-        case is ChannelFailureEvent where onReady != nil:
-            let error = SSHExecError.requestRejected
-            remoteCloseError = error
-            deliverReady(.failure(error))
-            context.close(promise: nil)
-        case let status as SSHChannelRequestEvent.ExitStatus:
-            guard status.exitStatus != 0 else { return }
-            let error = SSHExecError.nonZeroExitStatus(status: status.exitStatus, stderr: "")
-            remoteCloseError = error
-            deliverReady(.failure(error))
-        case let signal as SSHChannelRequestEvent.ExitSignal:
-            let error = SSHExecError.remoteSignal(name: signal.signalName, message: signal.errorMessage)
-            remoteCloseError = error
-            deliverReady(.failure(error))
-        default:
-            context.fireUserInboundEventTriggered(event)
-        }
     }
 
     /// Write outbound bytes to the server as channel data.
@@ -145,8 +189,6 @@ final class PTYChannelHandler: ChannelDuplexHandler {
         )
         context.triggerUserOutboundEvent(event, promise: nil)
     }
-
-    private var acknowledgedRequests = 0
 
     private func deliverReady(_ result: Result<Void, Error>) {
         guard let onReady else { return }

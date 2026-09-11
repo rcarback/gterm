@@ -12,4 +12,6 @@ struct SSHConnection: Identifiable {
     var term: String = "xterm-256color"
     var savedID: UUID? = nil
     var jumpHosts: [SSHConnection] = []
+    /// When true, the PTY execs `herdr` instead of requesting a login shell.
+    var attachHerdr: Bool = false
 }

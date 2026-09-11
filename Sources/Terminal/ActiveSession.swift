@@ -36,6 +36,7 @@ final class ActiveSession: ObservableObject, Identifiable {
         self.id = connection.savedID ?? connection.id
         self.connection = connection
         let surface = TerminalSurfaceView(ghostty: ghostty)
+        surface.attachHerdr = connection.attachHerdr
         self.surface = surface
         self.forwards = forwards
         installTransport(forwards: forwards)
