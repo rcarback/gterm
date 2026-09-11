@@ -114,3 +114,20 @@ Bundled / dependency components keep their own licenses: the
 swift-crypto, and swift-nio are Apache-2.0; the OpenAI and SwiftAnthropic SDKs
 are MIT.
 
+## Post-quantum key exchange
+
+SSH connections prefer `mlkem768x25519-sha256` when the server supports it.
+Servers without that algorithm use the existing classical exchanges. This hybrid
+exchange combines ML-KEM-768 with X25519, as defined in
+[RFC 10042](https://www.rfc-editor.org/rfc/rfc10042.html). It protects session key
+establishment. Host and user authentication keep their existing key types.
+
+The pinned [SSH engine fork](https://github.com/rcarback/swift-nio-ssh/tree/gterm/pq-kex)
+uses Swift Crypto's portable ML-KEM code so the app keeps its iOS 17 minimum.
+Swift Crypto is pinned to 4.5.2 because the adapter uses an internal C API.
+Dependency updates require adapter review and repeat interoperability testing.
+
+The engine tests cover malformed inputs, hybrid-secret encoding, rekeying,
+classical fallback, and OpenSSH interoperability. The app's
+`PostQuantumKeyExchangeTests` verifies hybrid negotiation and authentication
+through the resolved dependency.
