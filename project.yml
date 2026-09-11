@@ -126,6 +126,11 @@ targets:
       - path: Sources/SSH/PTYChannelHandler.swift
       - path: Sources/SSH/SessionStateNotifier.swift
       - path: Sources/SSH/SSHPort.swift
+      - path: Sources/Model/SavedConnection.swift
+      - path: Sources/SSH/SSHConnection.swift
+      - path: Sources/SSH/SSHTransport.swift
+      - path: Sources/SSH/SSHWrapperHandler.swift
+      - path: Sources/SSH/OrderedAuthDelegate.swift
       - path: Sources/Model/CommandHistory.swift
       - path: Sources/Model/HerdrSupport.swift
       - path: Sources/Model/ConnectionStore.swift
@@ -155,6 +160,7 @@ targets:
       - path: Tests/HerdrAutoAttachTests.swift
       - path: Sources/Model/HerdrSupport.swift
       - path: Sources/Model/ConnectionStore.swift
+      - path: Sources/Model/SavedConnection.swift
       - path: Sources/Model/Keychain.swift
       - path: Sources/SSH/PTYChannelHandler.swift
       - path: Sources/SSH/ChannelCloseOnce.swift
