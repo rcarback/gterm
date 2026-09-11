@@ -15,6 +15,10 @@ struct SavedConnection: Identifiable, Codable, Equatable {
     var savePassword: Bool = false
     /// Optional for compatibility with connections saved before jump-host support.
     var jumpHostID: UUID? = nil
+    /// When true, the SSH PTY execs `herdr` (start or attach to the default
+    /// background session) instead of a login shell. Off by default so hosts
+    /// without Herdr on `PATH` keep working.
+    var attachHerdr: Bool = false
 
     var title: String { name.isEmpty ? "\(username)@\(host)" : name }
 
@@ -22,6 +26,38 @@ struct SavedConnection: Identifiable, Codable, Equatable {
         let hostPart = port == 22 ? "\(username)@\(host)" : "\(username)@\(host):\(port)"
         if keyIDs.isEmpty { return hostPart }
         return "\(hostPart) · \(keyIDs.count) key\(keyIDs.count == 1 ? "" : "s")"
+    }
+}
+
+extension SavedConnection {
+    enum CodingKeys: String, CodingKey {
+        case id, name, host, port, username, keyIDs, savePassword, jumpHostID, attachHerdr
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 22
+        username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        keyIDs = try c.decodeIfPresent([UUID].self, forKey: .keyIDs) ?? []
+        savePassword = try c.decodeIfPresent(Bool.self, forKey: .savePassword) ?? false
+        jumpHostID = try c.decodeIfPresent(UUID.self, forKey: .jumpHostID)
+        attachHerdr = try c.decodeIfPresent(Bool.self, forKey: .attachHerdr) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(host, forKey: .host)
+        try c.encode(port, forKey: .port)
+        try c.encode(username, forKey: .username)
+        try c.encode(keyIDs, forKey: .keyIDs)
+        try c.encode(savePassword, forKey: .savePassword)
+        try c.encodeIfPresent(jumpHostID, forKey: .jumpHostID)
+        try c.encode(attachHerdr, forKey: .attachHerdr)
     }
 }
 

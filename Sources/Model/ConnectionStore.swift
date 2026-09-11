@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// Stores saved connections (metadata in UserDefaults, password in Keychain).
@@ -5,20 +6,24 @@ final class ConnectionStore: ObservableObject {
     @Published private(set) var connections: [SavedConnection] = []
 
     private let key = "savedConnections"
+    private let defaults: UserDefaults
     private func passwordAccount(_ c: SavedConnection) -> String { c.id.uuidString }
 
-    init() { load() }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        load()
+    }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([SavedConnection].self, from: data)
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? SavedConnectionCodec.decode(data)
         else { return }
         connections = decoded
     }
 
     private func persist() {
-        if let data = try? JSONEncoder().encode(connections) {
-            UserDefaults.standard.set(data, forKey: key)
+        if let data = try? SavedConnectionCodec.encode(connections) {
+            defaults.set(data, forKey: key)
         }
     }
 

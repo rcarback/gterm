@@ -7,6 +7,9 @@ options:
   groupSortPosition: top
 
 packages:
+  SwiftNIO:
+    url: https://github.com/apple/swift-nio.git
+    from: 2.81.0
   SwiftNIOSSH:
     url: https://github.com/rcarback/swift-nio-ssh.git
     revision: b0aff477572bb47d197fb85736458178eb900e46
@@ -24,10 +27,10 @@ packages:
 
 settings:
   base:
-    MARKETING_VERSION: "1.2"
+    MARKETING_VERSION: "1.3"
     # Build number is the build date (YYYYMMDD); pass CURRENT_PROJECT_VERSION
     # explicitly per build (e.g. `CURRENT_PROJECT_VERSION=$(date +%Y%m%d)`).
-    CURRENT_PROJECT_VERSION: "20260711"
+    CURRENT_PROJECT_VERSION: "20260907"
     # Team id is not committed — XcodeGen expands it from the environment.
     # Copy env.example to .env, then: set -a; source .env; set +a; xcodegen generate
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
@@ -125,6 +128,7 @@ targets:
       - path: Sources/Model/Keychain.swift
       - path: Sources/SSH/KnownHosts.swift
       - path: Sources/SSH/ChannelCloseOnce.swift
+      - path: Sources/SSH/PTYChannelHandler.swift
       - path: Sources/SSH/SessionStateNotifier.swift
       - path: Sources/SSH/SSHPort.swift
       - path: Sources/Model/SavedConnection.swift
@@ -133,7 +137,11 @@ targets:
       - path: Sources/SSH/SSHWrapperHandler.swift
       - path: Sources/SSH/OrderedAuthDelegate.swift
       - path: Sources/Model/CommandHistory.swift
+      - path: Sources/Model/HerdrSupport.swift
+      - path: Sources/Model/ConnectionStore.swift
     dependencies:
+      - package: SwiftNIO
+        product: NIOEmbedded
       - package: OpenAI
       - package: SwiftAnthropic
       - package: SwiftNIOSSH
@@ -196,6 +204,30 @@ targets:
         product: _CryptoExtras
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
+
+  # Runs real shell-startup regressions on macOS as well as SSH channel tests.
+  # Process is unavailable on iOS, so these tests need a host-side bundle.
+  gtermSSHTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/HerdrAutoAttachTests.swift
+      - path: Sources/Model/HerdrSupport.swift
+      - path: Sources/Model/ConnectionStore.swift
+      - path: Sources/Model/SavedConnection.swift
+      - path: Sources/Model/Keychain.swift
+      - path: Sources/SSH/PTYChannelHandler.swift
+      - path: Sources/SSH/ChannelCloseOnce.swift
+    dependencies:
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftNIO
+        product: NIOEmbedded
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermSSHTests
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:
