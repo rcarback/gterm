@@ -143,10 +143,14 @@ extension TerminalSurfaceView: UIGestureRecognizerDelegate, UIEditMenuInteractio
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
+    /// Geometry is frozen while a selection is up (see `layoutSubviews`), so
+    /// ask for the layout pass that applies whatever size it settled on.
     func endSelection() {
+        let wasSelecting = selectionView != nil
         selectionView?.removeFromSuperview()
         selectionView = nil
         scrollPan?.isEnabled = true
+        if wasSelecting { setNeedsLayout() }
     }
 
 }
