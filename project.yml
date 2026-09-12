@@ -12,7 +12,7 @@ packages:
     from: 2.81.0
   SwiftNIOSSH:
     url: https://github.com/rcarback/swift-nio-ssh.git
-    revision: b0aff477572bb47d197fb85736458178eb900e46
+    revision: 94d5a7683c0cae93d20db5e2702b351f33a82112
   SwiftCrypto:
     url: https://github.com/rcarback/swift-crypto.git
     revision: 23ddb5ee80893254a9b353668843aff5166dc4cc
@@ -143,6 +143,7 @@ targets:
       - path: Sources/Model/CommandHistory.swift
       - path: Sources/Model/HerdrSupport.swift
       - path: Sources/Model/ConnectionStore.swift
+      - path: Sources/SSH/KeepaliveTracker.swift
     dependencies:
       - package: SwiftNIO
         product: NIOEmbedded
