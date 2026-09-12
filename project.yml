@@ -128,7 +128,11 @@ targets:
       - path: Sources/Model/Keychain.swift
       - path: Sources/SSH/KnownHosts.swift
       - path: Sources/SSH/ChannelCloseOnce.swift
+      - path: Sources/SSH/SSHExecHandler.swift
       - path: Sources/SSH/PTYChannelHandler.swift
+      - path: Sources/Screen
+      - path: Sources/Terminal/TerminalTapMovement.swift
+      - path: Sources/Terminal/SessionRecovery.swift
       - path: Sources/SSH/SessionStateNotifier.swift
       - path: Sources/SSH/SSHPort.swift
       - path: Sources/Model/SavedConnection.swift
@@ -155,6 +159,37 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermTests
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
+
+  gtermScreenTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/Screen
+      - path: Sources/Terminal/TerminalTapMovement.swift
+      - path: Sources/Terminal/SessionRecovery.swift
+      - path: Tests/TerminalTapMovementTests.swift
+      - path: Tests/SessionRecoveryTests.swift
+      - path: Sources/SSH/SSHExecHandler.swift
+      - path: Sources/SSH/PTYChannelHandler.swift
+      # PTYChannelHandler takes its startup program from HerdrSupport.PTYStart;
+      # HerdrSupport also carries the SavedConnection codec.
+      - path: Sources/Model/HerdrSupport.swift
+      - path: Sources/Model/SavedConnection.swift
+      - path: Sources/SSH/ChannelCloseOnce.swift
+      - path: Tests/ScreenProtocolTests.swift
+      - path: Tests/ScreenControllerTests.swift
+      - path: Tests/SSHExecHandlerTests.swift
+    dependencies:
+      - package: SwiftCrypto
+        product: Crypto
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftNIO
+        product: NIOEmbedded
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 
   gtermIntegrationTests:
     type: bundle.unit-test
@@ -219,6 +254,8 @@ targets:
       - path: Sources/Model/SavedConnection.swift
       - path: Sources/Model/Keychain.swift
       - path: Sources/SSH/PTYChannelHandler.swift
+      # PTYChannelHandler reports startup/exit failures as SSHExecError.
+      - path: Sources/SSH/SSHExecHandler.swift
       - path: Sources/SSH/ChannelCloseOnce.swift
     dependencies:
       - package: SwiftNIOSSH
@@ -231,6 +268,13 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:
+  ScreenValidation:
+    build:
+      targets:
+        gtermScreenTests: all
+    test:
+      targets:
+        - gtermScreenTests
   gterm:
     build:
       targets:
