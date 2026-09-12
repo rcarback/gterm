@@ -145,6 +145,7 @@ targets:
       - path: Sources/Model/ConnectionStore.swift
       - path: Sources/SSH/KeepaliveTracker.swift
       - path: Sources/Terminal/BackgroundTaskAssertion.swift
+      - path: Sources/Terminal/BackgroundResumePolicy.swift
     dependencies:
       - package: SwiftNIO
         product: NIOEmbedded

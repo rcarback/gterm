@@ -152,12 +152,7 @@ final class ActiveSession: ObservableObject, Identifiable {
 
     /// Whether the transport is (or may still become) usable. Failed and
     /// closed sessions are dead: they are pruned rather than kept around.
-    var isAlive: Bool {
-        switch state {
-        case .failed, .closed: return false
-        case .idle, .connecting, .authenticating, .connected: return true
-        }
-    }
+    var isAlive: Bool { BackgroundResumePolicy.isAlive(state) }
 
     func start() {
         ssh.start()
@@ -224,8 +219,9 @@ final class SessionManager: ObservableObject {
     /// did not survive the background period. A session that is still connected
     /// after a short glance at another app needs nothing.
     func resumeAfterBackground() async {
-        let interrupted = assertion.end() == .interrupted
-        for session in sessions where interrupted || !session.isAlive {
+        let outcome = assertion.end()
+        for session in sessions
+        where BackgroundResumePolicy.needsCheck(outcome: outcome, state: session.state) {
             session.needsRecoveryCheck()
         }
         await withTaskGroup(of: Void.self) { group in
