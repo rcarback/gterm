@@ -65,6 +65,10 @@ final class SSHKeepalive {
                 promise.fail(SSHExecError.keepaliveTimedOut)
             }
             self.send().whenComplete { result in
+                // A reply that arrives after the deadline still completes this
+                // block. Cancelling a fired deadline and completing an already
+                // failed promise are both no-ops in NIO, so the late path is
+                // safe: the caller has already been told the probe timed out.
                 deadline.cancel()
                 if case .success = result { self.tracker.recordReply() }
                 promise.completeWith(result)
@@ -113,6 +117,7 @@ final class SSHKeepalive {
     private func reportDeadOnce() {
         guard !reportedDead else { return }
         reportedDead = true
+        stopped = true
         task?.cancel()
         task = nil
         onDead()

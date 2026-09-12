@@ -297,6 +297,10 @@ final class SSHSession: TerminalSession {
     }
 
     private func handleChannelClose(_ error: Error?) {
+        // The connection is over: stop the timer before it can report a second,
+        // spurious death three minutes from now.
+        keepalive?.stop()
+        keepalive = nil
         _ = transport?.close()
         if let error {
             lifecycle.notify(.failed(Self.describe(error)))
