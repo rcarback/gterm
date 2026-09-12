@@ -212,11 +212,16 @@ final class TerminalSurfaceView: UIView {
         ghostty?.tick()
     }
 
+    /// A selection pins the grid. It holds a snapshot of the rows and maps the
+    /// selected range back to cell coordinates, so a reflow would desync it.
+    /// Selecting also resigns first responder, which dismisses the keyboard and
+    /// resizes us — without the pin the selection would cancel itself the
+    /// moment it appeared. `endSelection` requests the deferred layout.
     override func layoutSubviews() {
         super.layoutSubviews()
+        guard selectionView == nil else { return }
         if bounds.size != lastSurfaceSize {
             lastSurfaceSize = bounds.size
-            endSelection()
             onGeometryChange?()
         }
         syncSize()
