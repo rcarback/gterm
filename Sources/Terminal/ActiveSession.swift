@@ -171,6 +171,7 @@ final class ActiveSession: ObservableObject, Identifiable {
 @MainActor
 final class SessionManager: ObservableObject {
     @Published private(set) var sessions: [ActiveSession] = []
+    private let assertion = BackgroundTaskAssertion(host: UIKitBackgroundTaskHost())
 
     func session(for id: UUID) -> ActiveSession? {
         sessions.first { $0.id == id }
@@ -194,11 +195,17 @@ final class SessionManager: ObservableObject {
         return session
     }
 
+    /// Defer suspension instead of tearing sessions down. iOS grants roughly 30
+    /// seconds, which covers the common case of a glance at another app, and a
+    /// session that was never cut off needs no health check on return.
     func enteredBackground() {
-        sessions.forEach { $0.enteredBackground() }
+        assertion.begin()
     }
 
     func resumeAfterBackground() async {
+        if assertion.end() == .interrupted {
+            sessions.forEach { $0.enteredBackground() }
+        }
         await withTaskGroup(of: Void.self) { group in
             for session in sessions {
                 group.addTask { await session.resumeAfterBackground() }
