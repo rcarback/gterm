@@ -80,13 +80,27 @@ final class ActiveSession: ObservableObject, Identifiable {
         waiting.forEach { $0.resume() }
     }
 
-    func enteredBackground() {
+    /// Cover the session for a background period. This suppresses the dismissal
+    /// in `TerminalScreen` and snapshots which forwards were running, both of
+    /// which must happen while the session is still connected. It schedules no
+    /// health check: whether one is needed is decided on the way back.
+    func willEnterBackground() {
         guard !explicitlyStopped, isAlive || isRecoveringConnection else { return }
         if backgroundForwardIDs == nil {
             backgroundForwardIDs = Set(forwardStates.compactMap { id, status in
                 status != .stopped ? id : nil
             })
         }
+        isRecoveringConnection = true
+    }
+
+    /// Schedule the health check that `resumeAfterBackground()` runs. Called when
+    /// the process was interrupted, or when the connection did not survive.
+    ///
+    /// This deliberately does not check `isAlive`. By the time it runs the socket
+    /// may already be reported dead, and that is exactly when the check is needed.
+    func needsRecoveryCheck() {
+        guard !explicitlyStopped else { return }
         isRecoveringConnection = true
         recovery.enteredBackground()
     }
@@ -106,8 +120,7 @@ final class ActiveSession: ObservableObject, Identifiable {
     func reconnect() async {
         guard !explicitlyStopped else { return }
         if isRecoveringConnection { await resumeAfterBackground(); return }
-        isRecoveringConnection = true
-        recovery.enteredBackground()
+        needsRecoveryCheck()
         await resumeAfterBackground()
     }
 
@@ -139,12 +152,7 @@ final class ActiveSession: ObservableObject, Identifiable {
 
     /// Whether the transport is (or may still become) usable. Failed and
     /// closed sessions are dead: they are pruned rather than kept around.
-    var isAlive: Bool {
-        switch state {
-        case .failed, .closed: return false
-        case .idle, .connecting, .authenticating, .connected: return true
-        }
-    }
+    var isAlive: Bool { BackgroundResumePolicy.isAlive(state) }
 
     func start() {
         ssh.start()
@@ -171,6 +179,7 @@ final class ActiveSession: ObservableObject, Identifiable {
 @MainActor
 final class SessionManager: ObservableObject {
     @Published private(set) var sessions: [ActiveSession] = []
+    private let assertion = BackgroundTaskAssertion(host: UIKitBackgroundTaskHost())
 
     func session(for id: UUID) -> ActiveSession? {
         sessions.first { $0.id == id }
@@ -194,11 +203,27 @@ final class SessionManager: ObservableObject {
         return session
     }
 
+    /// Defer suspension instead of tearing sessions down. iOS grants roughly 30
+    /// seconds, which covers the common case of a glance at another app, and a
+    /// session that was never cut off needs no health check on return.
+    ///
+    /// Sessions are still covered here, because the terminal screen reads
+    /// `isRecoveringConnection` to decide whether a `.closed` state should
+    /// dismiss it. Only the health check is deferred.
     func enteredBackground() {
-        sessions.forEach { $0.enteredBackground() }
+        assertion.begin()
+        sessions.forEach { $0.willEnterBackground() }
     }
 
+    /// Check a session only when the process was cut off, or when the connection
+    /// did not survive the background period. A session that is still connected
+    /// after a short glance at another app needs nothing.
     func resumeAfterBackground() async {
+        let outcome = assertion.end()
+        for session in sessions
+        where BackgroundResumePolicy.needsCheck(outcome: outcome, state: session.state) {
+            session.needsRecoveryCheck()
+        }
         await withTaskGroup(of: Void.self) { group in
             for session in sessions {
                 group.addTask { await session.resumeAfterBackground() }

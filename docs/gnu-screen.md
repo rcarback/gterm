@@ -110,3 +110,23 @@ xcodebuild -project gterm.xcodeproj -scheme ScreenValidation \
 Tests cover window data, stale state, history, and failed SSH commands.
 On the phone, check the keyboard, tabs, bells, and history.
 Then detach and check that the shell still works.
+
+## Backgrounding and session survival
+
+iOS suspends an app shortly after you leave it. A suspended app runs no code,
+so it cannot answer the server and cannot send keepalives.
+
+gterm handles this in three parts:
+
+1. **Short absences.** When you leave the app, gterm asks iOS to defer
+   suspension. The grant runs about 30 seconds. Inside that window the SSH
+   session stays connected, and returning to the app costs nothing.
+2. **Idle sessions.** A connected session sends a keepalive every 45 seconds.
+   This keeps address-translation state alive and stops a server with
+   `ClientAliveInterval` set from reaping a session you are looking at.
+3. **Long absences.** Once iOS suspends the app, the connection drops.
+   gterm detects the loss when you return and reconnects.
+
+For work that must survive a long absence, run it under Screen. The remote
+session keeps running while your phone is asleep. After the reconnect, gterm
+reattaches to it. Turn on **Attach to Screen** for the host.
