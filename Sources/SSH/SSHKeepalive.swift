@@ -20,6 +20,7 @@ final class SSHKeepalive {
     private var tracker: KeepaliveTracker
     private var task: RepeatedTask?
     private var reportedDead = false
+    private var stopped = false
 
     init(
         channel: Channel,
@@ -36,7 +37,7 @@ final class SSHKeepalive {
     /// Begin the timer. Calling this twice starts one timer.
     func start() {
         channel.eventLoop.execute {
-            guard self.task == nil else { return }
+            guard self.task == nil, !self.stopped else { return }
             self.task = self.channel.eventLoop.scheduleRepeatedTask(
                 initialDelay: self.interval,
                 delay: self.interval
@@ -49,6 +50,7 @@ final class SSHKeepalive {
     /// Stop the timer. Safe to call when no timer is running.
     func stop() {
         channel.eventLoop.execute {
+            self.stopped = true
             self.task?.cancel()
             self.task = nil
         }
@@ -64,6 +66,7 @@ final class SSHKeepalive {
             }
             self.send().whenComplete { result in
                 deadline.cancel()
+                if case .success = result { self.tracker.recordReply() }
                 promise.completeWith(result)
             }
         }
