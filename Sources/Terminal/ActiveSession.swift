@@ -105,11 +105,6 @@ final class ActiveSession: ObservableObject, Identifiable {
         recovery.enteredBackground()
     }
 
-    func enteredBackground() {
-        willEnterBackground()
-        needsRecoveryCheck()
-    }
-
     func resumeAfterBackground() async {
         guard !explicitlyStopped else { return }
         repeat {
@@ -125,8 +120,7 @@ final class ActiveSession: ObservableObject, Identifiable {
     func reconnect() async {
         guard !explicitlyStopped else { return }
         if isRecoveringConnection { await resumeAfterBackground(); return }
-        isRecoveringConnection = true
-        recovery.enteredBackground()
+        needsRecoveryCheck()
         await resumeAfterBackground()
     }
 
