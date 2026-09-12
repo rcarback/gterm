@@ -11,11 +11,11 @@ packages:
     url: https://github.com/apple/swift-nio.git
     from: 2.81.0
   SwiftNIOSSH:
-    url: https://github.com/apple/swift-nio-ssh.git
-    minorVersion: 0.13.0
+    url: https://github.com/rcarback/swift-nio-ssh.git
+    revision: b0aff477572bb47d197fb85736458178eb900e46
   SwiftCrypto:
-    url: https://github.com/apple/swift-crypto.git
-    from: 3.0.0
+    url: https://github.com/rcarback/swift-crypto.git
+    revision: 23ddb5ee80893254a9b353668843aff5166dc4cc
   # LLM streaming (SSE) follows the runse project: it streams via these SDKs
   # rather than hand-parsing Server-Sent Events.
   OpenAI:
@@ -101,6 +101,8 @@ targets:
         product: NIOSSH
       - package: SwiftCrypto
         product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
       - package: OpenAI
       - package: SwiftAnthropic
       - sdk: Metal.framework
@@ -121,15 +123,26 @@ targets:
       - path: Sources/LLM
       # Foundation-safe units covered by the audit (no GhosttyKit / UIKit).
       - path: Sources/SSH/SSHKeyParser.swift
+      - path: Sources/SSH/SSHKeyGenerator.swift
+      - path: Sources/Model/KeyStore.swift
+      - path: Sources/Model/Keychain.swift
       - path: Sources/SSH/KnownHosts.swift
       - path: Sources/SSH/ChannelCloseOnce.swift
+      - path: Sources/SSH/SSHExecHandler.swift
       - path: Sources/SSH/PTYChannelHandler.swift
+      - path: Sources/Screen
+      - path: Sources/Terminal/TerminalTapMovement.swift
+      - path: Sources/Terminal/SessionRecovery.swift
       - path: Sources/SSH/SessionStateNotifier.swift
       - path: Sources/SSH/SSHPort.swift
+      - path: Sources/Model/SavedConnection.swift
+      - path: Sources/SSH/SSHConnection.swift
+      - path: Sources/SSH/SSHTransport.swift
+      - path: Sources/SSH/SSHWrapperHandler.swift
+      - path: Sources/SSH/OrderedAuthDelegate.swift
       - path: Sources/Model/CommandHistory.swift
       - path: Sources/Model/HerdrSupport.swift
       - path: Sources/Model/ConnectionStore.swift
-      - path: Sources/Model/Keychain.swift
     dependencies:
       - package: SwiftNIO
         product: NIOEmbedded
@@ -139,11 +152,94 @@ targets:
         product: NIOSSH
       - package: SwiftCrypto
         product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermTests
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
+
+  gtermScreenTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/Screen
+      - path: Sources/Terminal/TerminalTapMovement.swift
+      - path: Sources/Terminal/SessionRecovery.swift
+      - path: Tests/TerminalTapMovementTests.swift
+      - path: Tests/SessionRecoveryTests.swift
+      - path: Sources/SSH/SSHExecHandler.swift
+      - path: Sources/SSH/PTYChannelHandler.swift
+      # PTYChannelHandler takes its startup program from HerdrSupport.PTYStart;
+      # HerdrSupport also carries the SavedConnection codec.
+      - path: Sources/Model/HerdrSupport.swift
+      - path: Sources/Model/SavedConnection.swift
+      - path: Sources/SSH/ChannelCloseOnce.swift
+      - path: Tests/ScreenProtocolTests.swift
+      - path: Tests/ScreenControllerTests.swift
+      - path: Tests/SSHExecHandlerTests.swift
+    dependencies:
+      - package: SwiftCrypto
+        product: Crypto
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftNIO
+        product: NIOEmbedded
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+  gtermIntegrationTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: IntegrationTests
+      - path: Tests/GeneratedKeyAuthenticationTests.swift
+    dependencies:
+      - target: gterm
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/gterm.app/gterm
+        BUNDLE_LOADER: $(TEST_HOST)
+        OTHER_SWIFT_FLAGS: $(inherited) -DKEYGEN_HOSTED_TESTS
+
+  gtermUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: gterm
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: gterm
+
+  gtermKeyTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/SSHKeyGeneratorTests.swift
+      - path: Tests/SSHKeyGenerationWorkerTests.swift
+      - path: Tests/GeneratedKeyAuthenticationTests.swift
+      - path: Sources/SSH/SSHKeyGenerator.swift
+      - path: Sources/SSH/SSHKeyParser.swift
+      - path: Sources/SSH/KnownHosts.swift
+      - path: Sources/Model/KeyStore.swift
+      - path: Sources/Model/Keychain.swift
+    dependencies:
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftCrypto
+        product: Crypto
+      - package: SwiftCrypto
+        product: _CryptoExtras
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 
   # Runs real shell-startup regressions on macOS as well as SSH channel tests.
   # Process is unavailable on iOS, so these tests need a host-side bundle.
@@ -155,8 +251,11 @@ targets:
       - path: Tests/HerdrAutoAttachTests.swift
       - path: Sources/Model/HerdrSupport.swift
       - path: Sources/Model/ConnectionStore.swift
+      - path: Sources/Model/SavedConnection.swift
       - path: Sources/Model/Keychain.swift
       - path: Sources/SSH/PTYChannelHandler.swift
+      # PTYChannelHandler reports startup/exit failures as SSHExecError.
+      - path: Sources/SSH/SSHExecHandler.swift
       - path: Sources/SSH/ChannelCloseOnce.swift
     dependencies:
       - package: SwiftNIOSSH
@@ -167,3 +266,24 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.madeye.gtermSSHTests
         GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  ScreenValidation:
+    build:
+      targets:
+        gtermScreenTests: all
+    test:
+      targets:
+        - gtermScreenTests
+  gterm:
+    build:
+      targets:
+        gterm: all
+  KeyGenerationValidation:
+    build:
+      targets:
+        gterm: all
+    test:
+      targets:
+        - gtermIntegrationTests
+        - gtermUITests

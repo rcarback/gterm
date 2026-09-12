@@ -18,9 +18,46 @@ connection via a custom **passthru IO backend** added to libghostty. See
 - ✅ SSH transport (swift-nio-ssh): password auth, PTY shell, window-change
 - ✅ Custom on-screen keyboard (esc/ctrl/alt/tab/arrows/symbols, sticky mods)
 - ✅ Saved connections (Keychain passwords) + trust-on-first-use host keys
-- ✅ Public-key auth: a Keys tab to import Ed25519/ECDSA keys (stored in the
-  Keychain, device-only); each host can select one or more keys to try
-- ⏳ Encrypted (passphrase) keys, RSA, richer settings (font/theme)
+- ✅ ProxyJump-style routing through saved jump hosts, including chained jumps
+- ✅ Public-key auth: generate Ed25519/RSA keys and import Ed25519/ECDSA/RSA
+  keys in the Keys tab. Keys stay in device-only Keychain storage. Each host can
+  select one or more keys to try.
+- ⏳ Encrypted (passphrase) keys, richer settings (font/theme)
+
+## Generate an SSH key
+
+Open **Keys → + → Generate Key** to create an Ed25519 or RSA key on your device.
+For RSA, enter 2048–32768 bits in multiples of 128. The default is
+3072. Custom sizes including 8192 and larger are accepted. Larger keys take
+longer to generate. The screen stays responsive while generation runs.
+Copy or share its public key, add it to your server's `authorized_keys`, then
+select the key on a saved host. The private key stays in device-only Keychain
+storage. Keep another way to access your servers if the device is lost.
+
+If a connection needs credentials, tap **Select SSH Key** in its prompt to
+choose a saved key. Tapping **Connect** remembers that choice for the host.
+
+See [on-device key generation](docs/on-device-key-generation-plan.md) for storage
+and test details.
+
+## Connecting through a jump host
+
+1. Save a connection for your reachable jump server (for example, `bastion.example.com`
+   on port `2222`), including its username and selected key or password.
+2. Save the destination using its hostname as seen from the jump server (for
+   example, `private.internal`), its SSH port, and its own username/credentials.
+3. In the destination's **ProxyJump → Jump Host** setting, select the saved jump
+   server. Connect to the destination from Hosts.
+
+Each hop authenticates separately and asks you to verify its host key. Missing
+passwords are requested together before connecting. A jump host can itself use
+another saved jump host; loops and deleted jump-host references are rejected.
+The jump server must permit SSH TCP forwarding to the next host. Destination
+port forwards operate through the final SSH connection.
+
+This provides ProxyJump-style transport. It does not import OpenSSH config files,
+execute `ProxyCommand`, or forward an SSH agent. Import the keys needed for each
+host into the app's Keys tab, or use passwords; private keys stay on the phone.
 
 ## Building
 
@@ -114,3 +151,21 @@ Bundled / dependency components keep their own licenses: the
 swift-crypto, and swift-nio are Apache-2.0; the OpenAI and SwiftAnthropic SDKs
 are MIT.
 
+## Post-quantum key exchange
+
+SSH connections prefer `mlkem768x25519-sha256` when the server supports it.
+Servers without that algorithm use the existing classical exchanges. This hybrid
+exchange combines ML-KEM-768 with X25519, as defined in
+[RFC 10042](https://www.rfc-editor.org/rfc/rfc10042.html). It protects session key
+establishment. Host and user authentication keep their existing key types.
+
+The pinned [SSH engine fork](https://github.com/rcarback/swift-nio-ssh/tree/gterm/dev)
+uses Swift Crypto's portable ML-KEM code so the app keeps its iOS 17 minimum.
+Swift Crypto is pinned to a revision of the 4.5.2-based RSA fork because the
+adapter uses an internal C API.
+Dependency updates require adapter review and repeat interoperability testing.
+
+The engine tests cover malformed inputs, hybrid-secret encoding, rekeying,
+classical fallback, and OpenSSH interoperability. The app's
+`PostQuantumKeyExchangeTests` verifies hybrid negotiation and authentication
+through the resolved dependency.

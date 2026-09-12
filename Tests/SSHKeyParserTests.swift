@@ -53,10 +53,10 @@ final class SSHKeyParserTests: XCTestCase {
         }
     }
 
-    func testRSAThrowsUnsupported() {
+    func testMalformedRSAIsRejected() {
         let rsa = "-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----"
         XCTAssertThrowsError(try SSHKeyParser.parse(rsa)) { error in
-            XCTAssertEqual(error as? SSHKeyError, .unsupportedType("ssh-rsa"))
+            XCTAssertEqual(error as? SSHKeyError, .malformed("invalid RSA private key"))
         }
     }
 
@@ -98,7 +98,7 @@ final class SSHKeyParserTests: XCTestCase {
             "ssh-ed25519 AAAA public",
         ])
         XCTAssertTrue(result.keys.isEmpty)
-        XCTAssertEqual(result.firstError as? SSHKeyError, .unsupportedType("ssh-rsa"))
+        XCTAssertEqual(result.firstError as? SSHKeyError, .malformed("invalid RSA private key"))
     }
 }
 

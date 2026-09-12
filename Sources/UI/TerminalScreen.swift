@@ -17,11 +17,13 @@ struct TappedURL: Identifiable {
 /// and a close button. The session itself is owned by `SessionManager`, so
 /// leaving this screen detaches from — but does not disconnect — the session.
 struct TerminalScreen: View {
+    @EnvironmentObject private var ghostty: Ghostty.App
     @ObservedObject var session: ActiveSession
     @ObservedObject var forwardStore: PortForwardStore
     let onClose: () -> Void
 
     @State private var showingAICommands = false
+    @State private var showingScreen = false
     @State private var showingForwards = false
     @State private var browsing: PortForward?
     /// A URL tapped in the terminal, opened in the in-app browser.
@@ -74,10 +76,15 @@ struct TerminalScreen: View {
         }
         .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
+        .fullScreenCover(isPresented: $showingScreen, onDismiss: {
+            _ = session.surface.becomeFirstResponder()
+        }) {
+            ScreenModeView(session: session, forwardStore: forwardStore, ghostty: ghostty)
+        }
         .onChange(of: session.state) { _, newState in
             // A clean remote close (e.g. `exit` in the shell) dismisses the
             // terminal; failures keep the screen up so the error stays readable.
-            if newState == .closed { onClose() }
+            if newState == .closed, !session.isRecoveringConnection { onClose() }
         }
         .alert(
             session.hostKeyRequest?.prompt.kind == .changed ? "Host Key Changed" : "Unknown Host",
@@ -138,10 +145,21 @@ struct TerminalScreen: View {
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
             Spacer()
-            Button { session.surface.toggleKeyboard() } label: {
-                Image(systemName: "keyboard").font(.body.weight(.semibold))
+            if !session.isAlive {
+                Button { Task { await session.reconnect() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("Reconnect")
+                .disabled(session.isRecoveringConnection)
             }
-            .accessibilityLabel("Toggle keyboard")
+            Button {
+                _ = session.surface.resignFirstResponder()
+                showingScreen = true
+            } label: {
+                Image(systemName: "rectangle.split.3x1")
+            }
+            .accessibilityLabel("GNU Screen sessions")
+            .disabled(session.state != .connected)
             Button { showingAICommands = true } label: {
                 Image(systemName: "sparkles").font(.body.weight(.semibold))
             }

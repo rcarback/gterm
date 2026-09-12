@@ -3,24 +3,6 @@ import NIOCore
 import NIOPosix
 import NIOSSH
 
-/// Connection parameters for an SSH session.
-struct SSHConnection: Identifiable {
-    var id = UUID()
-    var host: String
-    var port: Int = 22
-    var username: String
-    var password: String = ""
-    /// PEM/OpenSSH private key texts to try for public-key auth, in order.
-    var privateKeys: [String] = []
-    var term: String = "xterm-256color"
-    /// The owning `SavedConnection.id`, if this runtime connection came from a
-    /// saved host. Not persisted; rides along so the UI can resolve persisted
-    /// port forwards for this connection.
-    var savedID: UUID? = nil
-    /// When true, the PTY execs `herdr` instead of requesting a login shell.
-    var attachHerdr: Bool = false
-}
-
 /// Drives an interactive SSH shell over a PTY using swift-nio-ssh and feeds it
 /// into a TerminalSurfaceView. It is the surface's delegate: user input flows
 /// out to the channel, server output flows into the surface, and resizes are
@@ -32,9 +14,15 @@ final class SSHSession: TerminalSession {
     private let onHostKeyPrompt: TOFUHostKeyDelegate.Prompt?
 
     private let group: EventLoopGroup
+    private var transport: SSHTransport?
     private var channel: Channel?
     private var childChannel: Channel?
     private var ptyHandler: PTYChannelHandler?
+
+    private let stopLock = NSLock()
+    private var stopStarted = false
+    private var stopFinished = false
+    private var stopCompletions: [() -> Void] = []
 
     private var forwardManager: PortForwardManager?
     private let forwards: [PortForward]
@@ -63,52 +51,15 @@ final class SSHSession: TerminalSession {
         lifecycle.setStopped(false)
         lifecycle.notify(.connecting)
 
-        // Build authentication offers in preference order: private key (if
-        // provided), then password (if provided). Skip keys that fail to parse
-        // so one RSA/encrypted key does not block a good key or password.
-        var offers: [NIOSSHUserAuthenticationOffer.Offer] = []
-        let parsed = SSHKeyParser.parseUsable(connection.privateKeys)
-        for item in parsed.keys {
-            offers.append(.privateKey(.init(privateKey: item.key)))
-        }
-        if !connection.password.isEmpty {
-            offers.append(.password(.init(password: connection.password)))
-        }
-        guard !offers.isEmpty else {
-            lifecycle.notify(.failed(parsed.firstError.map(Self.describe) ?? "No authentication method provided."))
-            return
-        }
-
-        let authDelegate = OrderedAuthDelegate(username: connection.username, offers: offers)
-        let hostKeyDelegate = TOFUHostKeyDelegate(
-            hostID: "\(connection.host):\(connection.port)",
-            prompt: onHostKeyPrompt
-        )
-
-        let bootstrap = ClientBootstrap(group: group)
-            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .channelOption(ChannelOptions.connectTimeout, value: .seconds(20))
-            .channelInitializer { channel in
-                let sshHandler = NIOSSHHandler(
-                    role: .client(.init(
-                        userAuthDelegate: authDelegate,
-                        serverAuthDelegate: hostKeyDelegate
-                    )),
-                    allocator: channel.allocator,
-                    inboundChildChannelInitializer: nil
-                )
-                return channel.pipeline.addHandler(sshHandler)
-            }
-
+        let transport = SSHTransport(group: group, onHostKeyPrompt: onHostKeyPrompt)
+        self.transport = transport
         lifecycle.notify(.authenticating)
-        bootstrap.connect(host: connection.host, port: connection.port).whenComplete { [weak self] result in
+        transport.connect(connection).whenComplete { [weak self] result in
             guard let self else { return }
-            if self.lifecycle.isStopped() {
-                if case .success(let channel) = result { channel.close(promise: nil) }
-                return
-            }
+            if self.lifecycle.isStopped() { return }
             switch result {
             case .failure(let error):
+                _ = self.transport?.close()
                 self.lifecycle.notify(.failed(Self.describe(error)))
             case .success(let channel):
                 self.channel = channel
@@ -118,24 +69,66 @@ final class SSHSession: TerminalSession {
     }
 
     func stop() {
+        beginStop()
+    }
+
+    func stopAndWait() async {
+        await withCheckedContinuation { continuation in
+            beginStop { continuation.resume() }
+        }
+    }
+
+    private func beginStop(completion: (() -> Void)? = nil) {
         lifecycle.setStopped(true)
+        stopLock.lock()
+        if stopFinished {
+            stopLock.unlock()
+            completion?()
+            return
+        }
+        if let completion { stopCompletions.append(completion) }
+        guard !stopStarted else {
+            stopLock.unlock()
+            return
+        }
+        stopStarted = true
+        let manager = forwardManager
+        forwardManager = nil
+        let child = childChannel
+        let transport = self.transport
+        self.transport = nil
+        childChannel = nil
+        channel = nil
+        ptyHandler = nil
+        stopLock.unlock()
+
         let group = self.group
         // Close port-forward listeners + tunnels FIRST and wait for them to be
         // fully released, THEN close the channels and shut the group down. Shutting
         // the group down concurrently can leave a listener lingering bound, so the
         // next session's bind fails with EADDRINUSE.
-        let cleanup = forwardManager?.stopAll() ?? group.next().makeSucceededVoidFuture()
-        forwardManager = nil
-        let child = childChannel
-        let parent = channel
-        childChannel = nil
-        channel = nil
-        ptyHandler = nil
+        let cleanup = manager?.stopAll() ?? group.next().makeSucceededVoidFuture()
         cleanup.whenComplete { _ in
-            child?.close(promise: nil)
-            parent?.close(promise: nil)
-            group.shutdownGracefully { _ in }
+            let childClosed = child?.close().recover { _ in () }
+                ?? group.next().makeSucceededVoidFuture()
+            let closed = transport?.close() ?? group.next().makeSucceededVoidFuture()
+            EventLoopFuture.andAllComplete([childClosed, closed], on: group.next()).whenComplete { _ in
+                group.shutdownGracefully { [self] _ in finishStop() }
+            }
         }
+    }
+
+    private func finishStop() {
+        stopLock.lock()
+        guard !stopFinished else {
+            stopLock.unlock()
+            return
+        }
+        stopFinished = true
+        let completions = stopCompletions
+        stopCompletions.removeAll()
+        stopLock.unlock()
+        for completion in completions { completion() }
     }
 
     // MARK: Open the PTY shell child channel
@@ -155,6 +148,7 @@ final class SSHSession: TerminalSession {
             }
             switch result {
             case .failure(let error):
+                _ = self.transport?.close()
                 self.lifecycle.notify(.failed(Self.describe(error)))
 
             case .success(let sshHandler):
@@ -187,8 +181,15 @@ final class SSHSession: TerminalSession {
                     }
                     switch result {
                     case .failure(let error):
+                        _ = self.transport?.close()
                         self.lifecycle.notify(.failed(Self.describe(error)))
                     case .success(let childChannel):
+                        self.stopLock.lock()
+                        guard !self.stopStarted else {
+                            self.stopLock.unlock()
+                            childChannel.close(promise: nil)
+                            return
+                        }
                         self.childChannel = childChannel
                         // The parent `channel` is the authenticated connection;
                         // the forward manager reuses it and the shared group.
@@ -199,6 +200,7 @@ final class SSHSession: TerminalSession {
                         )
                         self.forwardManager = mgr
                         for f in self.forwards where f.autoStart { mgr.start(f) }
+                        self.stopLock.unlock()
                         self.lifecycle.notify(.connected)
                     }
                 }
@@ -219,6 +221,60 @@ final class SSHSession: TerminalSession {
         forwardManager?.stop(id)
     }
 
+    // MARK: Command channels
+
+    /// Run a non-interactive command on a separate authenticated child channel.
+    /// Command bytes and output never pass through the interactive shell channel.
+    func execute(_ command: String) async throws -> String {
+        try await execute(command, timeout: .seconds(10))
+    }
+
+    func checkConnection() async throws {
+        _ = try await execute("true", timeout: .seconds(3))
+    }
+
+    private func execute(_ command: String, timeout: TimeAmount) async throws -> String {
+        guard let channel, channel.isActive else { throw SSHExecError.notConnected }
+        let request = SSHExecOperation(parentChannel: channel, command: command, timeout: timeout)
+        request.start()
+        return try await withTaskCancellationHandler(operation: {
+            try await request.result.get()
+        }, onCancel: {
+            request.cancel()
+        })
+    }
+
+    /// Open an interactive Screen attachment on its own PTY child channel.
+    /// The returned terminal is ready only after the server accepts both the
+    /// PTY allocation and exec request.
+    @MainActor
+    func openScreenTerminal(
+        command: String,
+        view: TerminalSurfaceView,
+        onClose: @escaping (Error?) -> Void
+    ) async throws -> ScreenTerminal {
+        guard let channel, channel.isActive else { throw SSHExecError.notConnected }
+        let gridSize = view.gridSize
+        let request = ScreenTerminalOpenOperation(
+            parentChannel: channel,
+            term: connection.term,
+            command: command,
+            view: view,
+            cols: gridSize.cols,
+            rows: gridSize.rows,
+            timeout: .seconds(10),
+            onClose: onClose
+        )
+        request.start()
+        let terminal = try await withTaskCancellationHandler(operation: {
+            try await request.result.get()
+        }, onCancel: {
+            request.cancel()
+        })
+        view.delegate = terminal
+        return terminal
+    }
+
     private func deliverOutput(_ buf: ByteBuffer) {
         guard let view else { return }
         var buf = buf
@@ -228,6 +284,7 @@ final class SSHSession: TerminalSession {
     }
 
     private func handleChannelClose(_ error: Error?) {
+        _ = transport?.close()
         if let error {
             lifecycle.notify(.failed(Self.describe(error)))
         } else {
@@ -281,45 +338,202 @@ final class SSHSession: TerminalSession {
     }
 }
 
-// MARK: - Auth delegate
+/// Routes a dedicated Screen PTY without replacing the session's primary shell.
+final class ScreenTerminal: TerminalSurfaceViewDelegate, @unchecked Sendable {
+    private let childChannel: Channel
+    private weak var view: TerminalSurfaceView?
+    private var ptyHandler: PTYChannelHandler?
+    private let closeRelay: ScreenTerminalCloseRelay
 
-/// Offers a fixed, ordered list of authentication methods (e.g. private key
-/// then password), skipping any the server doesn't advertise.
-private final class OrderedAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
-    private let username: String
-    private let offers: [NIOSSHUserAuthenticationOffer.Offer]
-    private var index = 0
-
-    init(username: String, offers: [NIOSSHUserAuthenticationOffer.Offer]) {
-        self.username = username
-        self.offers = offers
+    init(childChannel: Channel, view: TerminalSurfaceView, onClose: @escaping (Error?) -> Void) {
+        self.childChannel = childChannel
+        self.view = view
+        self.closeRelay = ScreenTerminalCloseRelay(view: view, onClose: onClose)
+        self.closeRelay.terminal = self
     }
 
-    func nextAuthenticationType(
-        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
-        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
+    func configure(
+        term: String,
+        command: String,
+        cols: Int,
+        rows: Int,
+        onReady: @escaping (Result<Void, Error>) -> Void
+    ) -> EventLoopFuture<Void> {
+        let handler = PTYChannelHandler(
+            term: term,
+            cols: cols,
+            rows: rows,
+            start: .exec(command),
+            onOutput: { [weak self] buffer in self?.deliverOutput(buffer) },
+            onReady: onReady,
+            onClose: { [closeRelay] error in closeRelay.deliver(error) }
+        )
+        ptyHandler = handler
+        return childChannel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).flatMap {
+            self.childChannel.pipeline.addHandler(handler)
+        }
+    }
+
+    func close() {
+        childChannel.eventLoop.execute {
+            self.childChannel.close(promise: nil)
+        }
+    }
+
+    func terminalSurface(_ view: TerminalSurfaceView, didProduceOutput data: Data) {
+        sendInput(data)
+    }
+
+    func sendInput(_ data: Data) {
+        var buffer = childChannel.allocator.buffer(capacity: data.count)
+        buffer.writeBytes(data)
+        childChannel.eventLoop.execute {
+            self.childChannel.writeAndFlush(buffer, promise: nil)
+        }
+    }
+
+    func terminalSurface(_ view: TerminalSurfaceView, didResizeToCols cols: Int, rows: Int) {
+        childChannel.eventLoop.execute {
+            self.ptyHandler?.sendWindowChange(cols: cols, rows: rows)
+        }
+    }
+
+    private func deliverOutput(_ buffer: ByteBuffer) {
+        var buffer = buffer
+        guard let bytes = buffer.readBytes(length: buffer.readableBytes) else { return }
+        view?.receive(Data(bytes))
+    }
+}
+
+private final class ScreenTerminalCloseRelay: @unchecked Sendable {
+    weak var terminal: ScreenTerminal?
+    private weak var view: TerminalSurfaceView?
+    private var onClose: ((Error?) -> Void)?
+
+    init(view: TerminalSurfaceView, onClose: @escaping (Error?) -> Void) {
+        self.view = view
+        self.onClose = onClose
+    }
+
+    func deliver(_ error: Error?) {
+        guard let onClose else { return }
+        self.onClose = nil
+        DispatchQueue.main.async { [weak self] in
+            if let terminal = self?.terminal, self?.view?.delegate === terminal {
+                self?.view?.delegate = nil
+            }
+            onClose(error)
+        }
+    }
+}
+
+private final class ScreenTerminalOpenOperation {
+    private let parentChannel: Channel
+    private let term: String
+    private let command: String
+    private let view: TerminalSurfaceView
+    private let cols: Int
+    private let rows: Int
+    private let timeout: TimeAmount
+    private let onClose: (Error?) -> Void
+    private let resultPromise: EventLoopPromise<ScreenTerminal>
+    private var terminal: ScreenTerminal?
+    private var childChannelOpened = false
+    private var requestsAccepted = false
+    private var timeoutTask: Scheduled<Void>?
+    private var completed = false
+
+    init(
+        parentChannel: Channel,
+        term: String,
+        command: String,
+        view: TerminalSurfaceView,
+        cols: Int,
+        rows: Int,
+        timeout: TimeAmount,
+        onClose: @escaping (Error?) -> Void
     ) {
-        while index < offers.count {
-            let offer = offers[index]
-            index += 1
-            if isAdvertised(offer, in: availableMethods) {
-                nextChallengePromise.succeed(
-                    NIOSSHUserAuthenticationOffer(username: username, serviceName: "", offer: offer)
-                )
-                return
+        self.parentChannel = parentChannel
+        self.term = term
+        self.command = command
+        self.view = view
+        self.cols = cols
+        self.rows = rows
+        self.timeout = timeout
+        self.onClose = onClose
+        self.resultPromise = parentChannel.eventLoop.makePromise(of: ScreenTerminal.self)
+    }
+
+    var result: EventLoopFuture<ScreenTerminal> { resultPromise.futureResult }
+
+    func start() {
+        parentChannel.eventLoop.execute {
+            guard !self.completed else { return }
+            self.timeoutTask = self.parentChannel.eventLoop.scheduleTask(in: self.timeout) {
+                self.finish(.failure(SSHExecError.timedOut))
+            }
+            self.parentChannel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { lookup in
+                switch lookup {
+                case .failure(let error):
+                    self.finish(.failure(SSHExecError.channelOpenFailed(error.localizedDescription)))
+                case .success(let sshHandler):
+                    let channelPromise = self.parentChannel.eventLoop.makePromise(of: Channel.self)
+                    sshHandler.createChannel(channelPromise, channelType: .session) { child, _ in
+                        let terminal = ScreenTerminal(childChannel: child, view: self.view, onClose: self.onClose)
+                        self.terminal = terminal
+                        if self.completed {
+                            child.close(promise: nil)
+                            return child.eventLoop.makeFailedFuture(SSHExecError.cancelled)
+                        }
+                        return terminal.configure(
+                            term: self.term,
+                            command: self.command,
+                            cols: self.cols,
+                            rows: self.rows
+                        ) { [weak self] ready in
+                            guard let self else { return }
+                            switch ready {
+                            case .success:
+                                self.requestsAccepted = true
+                                self.succeedIfReady()
+                            case .failure(let error):
+                                self.finish(.failure(error))
+                            }
+                        }
+                    }
+                    channelPromise.futureResult.whenComplete { opened in
+                        switch opened {
+                        case .failure(let error):
+                            self.finish(.failure(SSHExecError.channelOpenFailed(error.localizedDescription)))
+                        case .success:
+                            self.childChannelOpened = true
+                            self.succeedIfReady()
+                        }
+                    }
+                }
             }
         }
-        nextChallengePromise.succeed(nil)
     }
 
-    private func isAdvertised(
-        _ offer: NIOSSHUserAuthenticationOffer.Offer,
-        in methods: NIOSSHAvailableUserAuthenticationMethods
-    ) -> Bool {
-        switch offer {
-        case .privateKey: return methods.contains(.publicKey)
-        case .password: return methods.contains(.password)
-        default: return true
+    func cancel() {
+        finish(.failure(SSHExecError.cancelled))
+    }
+
+    private func succeedIfReady() {
+        guard childChannelOpened, requestsAccepted, let terminal else { return }
+        finish(.success(terminal))
+    }
+
+    private func finish(_ result: Result<ScreenTerminal, Error>) {
+        guard parentChannel.eventLoop.inEventLoop else {
+            parentChannel.eventLoop.execute { self.finish(result) }
+            return
         }
+        guard !completed else { return }
+        completed = true
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        if case .failure = result { terminal?.close() }
+        resultPromise.completeWith(result)
     }
 }

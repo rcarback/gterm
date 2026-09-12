@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct RootView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var ghostty: Ghostty.App
     @StateObject private var connections = ConnectionStore()
     @StateObject private var keys = KeyStore()
@@ -45,6 +46,10 @@ struct RootView: View {
                 showWelcome = false
                 hasSeenWelcome = true
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { sessions.enteredBackground() }
+            if phase == .active { Task { await sessions.resumeAfterBackground() } }
         }
         .onAppear {
             if !hasSeenWelcome { showWelcome = true }

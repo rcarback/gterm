@@ -29,6 +29,11 @@ extension TerminalSurfaceView {
             lastScrollTranslationY = translationY
             guard delta != 0 else { return }
 
+            if let onTouchScroll {
+                onTouchScroll(delta)
+                return
+            }
+
             // Convert points to surface pixels and feed as a precision scroll so
             // the content follows the finger. Positive y scrolls toward older
             // lines, which is what dragging the content downward should do.

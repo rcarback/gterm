@@ -13,8 +13,9 @@ struct ConnectionListView: View {
     let onConnect: (SSHConnection) -> Void
 
     @State private var editing: SavedConnection?
-    @State private var passwordPromptFor: SavedConnection?
-    @State private var promptPassword = ""
+    @State private var pendingRoute: ConnectionCredentialRequest?
+    @State private var routeError: String?
+    @State private var readyConnection: SSHConnection?
 
     var body: some View {
         NavigationStack {
@@ -32,6 +33,10 @@ struct ConnectionListView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(conn.title).font(.headline)
                                 Text(conn.subtitle).font(.subheadline).foregroundStyle(.secondary)
+                                if let id = conn.jumpHostID {
+                                    Text("via \(store.connections.first(where: { $0.id == id })?.title ?? "unavailable jump host")")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                             Spacer()
                             if let session = sessions.session(for: conn.id) {
@@ -70,22 +75,30 @@ struct ConnectionListView: View {
             .sheet(item: $editing) { conn in
                 AddConnectionView(store: store, keyStore: keyStore, forwardStore: forwardStore, connection: conn)
             }
-            .alert(
-                "Password",
-                isPresented: Binding(
-                    get: { passwordPromptFor != nil },
-                    set: { if !$0 { passwordPromptFor = nil } }
-                ),
-                presenting: passwordPromptFor
-            ) { conn in
-                SecureField("password", text: $promptPassword)
-                Button("Connect") {
-                    onConnect(makeConnection(conn, password: promptPassword))
-                    promptPassword = ""
+            .sheet(item: $pendingRoute, onDismiss: {
+                if let connection = readyConnection {
+                    readyConnection = nil
+                    onConnect(connection)
                 }
-                Button("Cancel", role: .cancel) { promptPassword = "" }
-            } message: { conn in
-                Text("Enter the password for \(conn.username)@\(conn.host).")
+            }) { request in
+                ConnectionCredentialsView(hosts: request.missing, keyStore: keyStore) { passwords, selectedKeys in
+                    let route = request.route.map { host in
+                        var selected = host
+                        if let keyID = selectedKeys[host.id] {
+                            selected.keyIDs = [keyID]
+                            store.save(selected, password: nil)
+                        }
+                        return selected
+                    }
+                    openRoute(route, passwords: passwords, afterDismiss: true)
+                }
+            }
+            .alert("Cannot Connect", isPresented: Binding(
+                get: { routeError != nil }, set: { if !$0 { routeError = nil } }
+            )) {
+                Button("OK", role: .cancel) { routeError = nil }
+            } message: {
+                Text(routeError ?? "")
             }
         }
     }
@@ -108,15 +121,27 @@ struct ConnectionListView: View {
             onConnect(session.connection)
             return
         }
-        let keys = keyTexts(for: conn)
-        if let saved = store.savedPassword(for: conn) {
-            onConnect(makeConnection(conn, password: saved))
-        } else if !keys.isEmpty {
-            onConnect(makeConnection(conn, password: ""))
-        } else {
-            promptPassword = ""
-            passwordPromptFor = conn
+        do {
+            let route = try SSHRoute.resolve(conn, in: store.connections)
+            let missing = route.filter {
+                keyTexts(for: $0).isEmpty && (store.savedPassword(for: $0) ?? "").isEmpty
+            }
+            if missing.isEmpty {
+                openRoute(route, passwords: [:])
+            } else {
+                pendingRoute = ConnectionCredentialRequest(route: route, missing: missing)
+            }
+        } catch { routeError = error.localizedDescription }
+    }
+
+    private func openRoute(_ route: [SavedConnection], passwords: [UUID: String], afterDismiss: Bool = false) {
+        var endpoints = route.map {
+            makeConnection($0, password: passwords[$0.id] ?? store.savedPassword(for: $0) ?? "")
         }
+        guard var destination = endpoints.popLast() else { return }
+        destination.jumpHosts = endpoints
+        if afterDismiss { readyConnection = destination }
+        else { onConnect(destination) }
     }
 }
 
@@ -147,4 +172,10 @@ private struct SessionBadge: View {
         case .failed, .closed: return "ended"
         }
     }
+}
+
+private struct ConnectionCredentialRequest: Identifiable {
+    let id = UUID()
+    let route: [SavedConnection]
+    let missing: [SavedConnection]
 }
