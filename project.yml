@@ -144,6 +144,7 @@ targets:
       - path: Sources/Model/HerdrSupport.swift
       - path: Sources/Model/ConnectionStore.swift
       - path: Sources/SSH/KeepaliveTracker.swift
+      - path: Sources/Terminal/BackgroundTaskAssertion.swift
     dependencies:
       - package: SwiftNIO
         product: NIOEmbedded
