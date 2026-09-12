@@ -142,6 +142,10 @@ final class TerminalSurfaceView: UIView {
     weak var selectionLongPress: UILongPressGestureRecognizer?
     var selectionView: TerminalSelectionView?
 
+    /// Raises the edit menu when a hold lands where there is no word to select,
+    /// so the clipboard is reachable at an empty prompt.
+    weak var pasteMenu: UIEditMenuInteraction?
+
     // MARK: Scroll gesture state (see TerminalSurfaceView+Scroll)
 
     /// Cumulative pan translation already converted to scroll, so each `.changed`

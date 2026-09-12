@@ -8,6 +8,15 @@ import GhosttyKit
 final class TerminalInteractionTests: XCTestCase {
     private static let ghostty = Ghostty.App()
 
+    /// Whether a test wrote to the clipboard, so `tearDown` empties it again.
+    private var usedClipboard = false
+
+    override func tearDown() {
+        if usedClipboard { UIPasteboard.general.items = [] }
+        usedClipboard = false
+        super.tearDown()
+    }
+
     func testSSHStopCanBeAwaitedRepeatedly() async {
         let surface = TerminalSurfaceView(ghostty: Self.ghostty)
         let ssh = SSHSession(connection: SSHConnection(host: "127.0.0.1", username: "test"),
@@ -204,6 +213,68 @@ final class TerminalInteractionTests: XCTestCase {
         XCTAssertEqual(selection.selectedTerminalText(), "ell")
         surface.endSelection()
         XCTAssertEqual(surface.scrollPan?.isEnabled, true)
+    }
+
+    func testPasteFromTheSelectionMenuWritesTheClipboardToTheTerminal() async throws {
+        let surface = TerminalSurfaceView(ghostty: Self.ghostty)
+        let recorder = KeyboardOutputRecorder()
+        surface.delegate = recorder
+        surface.receive(Data("hello world\r\n".utf8))
+        withClipboard("echo hi")
+        surface.beginSelection(at: CGPoint(x: 12, y: 8))
+        let selection = try XCTUnwrap(surface.selectionView)
+        XCTAssertTrue(selection.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)),
+                                                 withSender: nil))
+        selection.paste(nil)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(String(decoding: recorder.data, as: UTF8.self), "echo hi")
+        XCTAssertNil(surface.selectionView, "Pasting must dismiss the selection overlay")
+        XCTAssertEqual(surface.scrollPan?.isEnabled, true)
+    }
+
+    func testHoldingBlankSpaceOffersPasteWithoutSelecting() async throws {
+        let surface = TerminalSurfaceView(ghostty: Self.ghostty)
+        let recorder = KeyboardOutputRecorder()
+        surface.delegate = recorder
+        withClipboard("echo hi")
+        surface.beginSelection(at: CGPoint(x: 12, y: 8))
+        XCTAssertNil(surface.selectionView, "Blank space has no word to select")
+        XCTAssertNotNil(surface.pasteMenu, "Paste must still be reachable at an empty prompt")
+        XCTAssertTrue(surface.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)),
+                                               withSender: nil),
+                      "The edit menu draws Paste from the responder chain")
+        surface.pasteClipboard()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(String(decoding: recorder.data, as: UTF8.self), "echo hi")
+        XCTAssertEqual(surface.scrollPan?.isEnabled, true)
+    }
+
+    func testPasteIsUnavailableWithAnEmptyClipboard() async throws {
+        let surface = TerminalSurfaceView(ghostty: Self.ghostty)
+        let recorder = KeyboardOutputRecorder()
+        surface.delegate = recorder
+        surface.receive(Data("hello world\r\n".utf8))
+        withClipboard(nil)
+        surface.beginSelection(at: CGPoint(x: 12, y: 8))
+        let selection = try XCTUnwrap(surface.selectionView)
+        let paste = #selector(UIResponderStandardEditActions.paste(_:))
+        XCTAssertFalse(selection.canPerformAction(paste, withSender: nil))
+        XCTAssertFalse(surface.canPerformAction(paste, withSender: nil))
+        selection.paste(nil)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(recorder.data.isEmpty)
+        XCTAssertNil(surface.selectionView, "An empty clipboard still dismisses the overlay")
+    }
+
+    /// Sets the system clipboard for the rest of the test, or clears it when
+    /// `text` is nil. `tearDown` empties it again.
+    ///
+    /// Never read `UIPasteboard.general.string` here to save the old value:
+    /// a programmatic read raises the "would like to paste" alert, which has no
+    /// one to dismiss it and hangs the run.
+    private func withClipboard(_ text: String?) {
+        usedClipboard = true
+        if let text { UIPasteboard.general.string = text } else { UIPasteboard.general.items = [] }
     }
 
     func testGeometryCallbackRunsOnlyWhenSizeChanges() {

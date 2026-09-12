@@ -1,7 +1,11 @@
 import UIKit
 import GhosttyKit
 
-extension TerminalSurfaceView: UIGestureRecognizerDelegate {
+/// Hold-to-select, with Copy and Paste in the menu UIKit puts over the
+/// selection. A hold that lands on blank space has no word to select, so it
+/// raises the edit menu on its own — that is how Paste stays reachable at an
+/// empty prompt.
+extension TerminalSurfaceView: UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
     func setupSelectionGestures() {
         let longPress = UILongPressGestureRecognizer(
             target: self, action: #selector(handleSelectionLongPress(_:))
@@ -10,6 +14,9 @@ extension TerminalSurfaceView: UIGestureRecognizerDelegate {
         longPress.delegate = self
         addGestureRecognizer(longPress)
         selectionLongPress = longPress
+        let menu = UIEditMenuInteraction(delegate: self)
+        addInteraction(menu)
+        pasteMenu = menu
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -18,8 +25,57 @@ extension TerminalSurfaceView: UIGestureRecognizerDelegate {
     }
 
     @objc private func handleSelectionLongPress(_ gesture: UILongPressGestureRecognizer) {
-        if gesture.state == .began { beginSelection(at: gesture.location(in: self)) }
+        if gesture.state == .began {
+            let point = gesture.location(in: self)
+            beginSelection(at: point)
+            if selectionView == nil { presentPasteMenu(at: point) }
+        }
         if gesture.state == .ended { selectionView?.select(nil) }
+    }
+
+    /// Offer Paste where there is nothing to select. Scrolling stays enabled:
+    /// the menu dismisses itself as soon as the user pans.
+    func presentPasteMenu(at point: CGPoint) {
+        guard window != nil, ghosttySurface != nil, UIPasteboard.general.hasStrings else { return }
+        // UIKit sources the menu's actions from the first responder, so the
+        // menu is empty unless the terminal holds focus.
+        if !isFirstResponder { _ = becomeFirstResponder() }
+        pasteMenu?.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
+    }
+
+    /// UIKit builds the menu from the responder chain, which reaches the
+    /// `paste(_:)` below. Going through the standard action (rather than a
+    /// hand-rolled one) is what stops iOS asking "Allow Paste?" every time.
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        menuFor configuration: UIEditMenuConfiguration,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        UIMenu(children: suggestedActions)
+    }
+
+    /// `hasStrings` rather than reading the clipboard: a read here would fire
+    /// the system paste prompt merely to decide whether to show the menu item.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)) { return UIPasteboard.general.hasStrings }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        pasteClipboard()
+    }
+
+    func pasteClipboard() {
+        guard let clip = UIPasteboard.general.string else { return }
+        pasteText(clip)
+    }
+
+    /// Write text to the terminal as a paste. `sendText` applies bracketed
+    /// paste when the running program asked for it (DECSET 2004).
+    func pasteText(_ text: String) {
+        guard !text.isEmpty else { return }
+        sendText(text)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     func beginSelection(at point: CGPoint) {
@@ -54,6 +110,7 @@ extension TerminalSurfaceView: UIGestureRecognizerDelegate {
             origin: origin
         )
         selection.onFinish = { [weak self] in self?.endSelection() }
+        selection.onPaste = { [weak self] text in self?.pasteText(text) }
         selection.readSelection = { [weak self] start, end in
             guard let surface = self?.ghosttySurface else { return nil }
             let range = ghostty_selection_s(

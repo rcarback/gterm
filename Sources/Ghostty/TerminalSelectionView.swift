@@ -2,10 +2,18 @@ import UIKit
 
 /// A transparent text layer lets UIKit own selection handles and the Copy menu
 /// while Ghostty continues to draw the terminal underneath it.
+///
+/// The text storage mirrors the grid and must stay immutable — `selectedRange`
+/// is mapped back to cell coordinates, so an edit would desync that mapping.
+/// Paste therefore never touches this view: it hands the clipboard to `onPaste`,
+/// which writes it to the terminal instead.
 final class TerminalSelectionView: UITextView, UITextViewDelegate {
     var onFinish: (() -> Void)?
     var readSelection: ((CGPoint, CGPoint) -> String?)?
     var isContentCurrent: (() -> Bool)?
+
+    /// Sends clipboard text to the terminal. Set by the surface view.
+    var onPaste: ((String) -> Void)?
     private var selectionReady = false
     private let cellSize: CGSize
 
@@ -64,6 +72,9 @@ final class TerminalSelectionView: UITextView, UITextViewDelegate {
     }
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        // UIKit disables Paste on a non-editable text view, so offer it here:
+        // the target is the terminal, not the text storage.
+        if action == #selector(paste(_:)) { return UIPasteboard.general.hasStrings }
         if action == #selector(copy(_:)) || action == #selector(selectAll(_:)) {
             return super.canPerformAction(action, withSender: sender)
         }
@@ -75,6 +86,14 @@ final class TerminalSelectionView: UITextView, UITextViewDelegate {
         guard let selected = selectedTerminalText(), !selected.isEmpty else { return }
         UIPasteboard.general.string = selected
         onFinish?()
+    }
+
+    /// Writes the clipboard to the terminal at its cursor, not into this view.
+    /// The selection is dismissed either way so the grid is visible again.
+    override func paste(_ sender: Any?) {
+        defer { onFinish?() }
+        guard let clip = UIPasteboard.general.string, !clip.isEmpty else { return }
+        onPaste?(clip)
     }
 
     func selectedTerminalText() -> String? {
