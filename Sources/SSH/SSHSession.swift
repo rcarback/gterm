@@ -18,6 +18,7 @@ final class SSHSession: TerminalSession {
     private var channel: Channel?
     private var childChannel: Channel?
     private var ptyHandler: PTYChannelHandler?
+    private var keepalive: SSHKeepalive?
 
     private let stopLock = NSLock()
     private var stopStarted = false
@@ -96,11 +97,14 @@ final class SSHSession: TerminalSession {
         forwardManager = nil
         let child = childChannel
         let transport = self.transport
+        let keepalive = self.keepalive
         self.transport = nil
         childChannel = nil
         channel = nil
         ptyHandler = nil
+        self.keepalive = nil
         stopLock.unlock()
+        keepalive?.stop()
 
         let group = self.group
         // Close port-forward listeners + tunnels FIRST and wait for them to be
@@ -200,7 +204,12 @@ final class SSHSession: TerminalSession {
                         )
                         self.forwardManager = mgr
                         for f in self.forwards where f.autoStart { mgr.start(f) }
+                        let keepalive = SSHKeepalive(channel: channel) { [weak self] in
+                            self?.handleChannelClose(SSHExecError.keepaliveTimedOut)
+                        }
+                        self.keepalive = keepalive
                         self.stopLock.unlock()
+                        keepalive.start()
                         self.lifecycle.notify(.connected)
                     }
                 }
@@ -229,8 +238,12 @@ final class SSHSession: TerminalSession {
         try await execute(command, timeout: .seconds(10))
     }
 
+    /// Prove the connection round-trips. A keepalive is one packet and needs no
+    /// child channel, so a stalled socket fails faster than an exec probe and a
+    /// healthy one is not disturbed at all.
     func checkConnection() async throws {
-        _ = try await execute("true", timeout: .seconds(3))
+        guard let keepalive else { throw SSHExecError.notConnected }
+        try await keepalive.probe(timeout: .seconds(3)).get()
     }
 
     private func execute(_ command: String, timeout: TimeAmount) async throws -> String {
