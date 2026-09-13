@@ -2,6 +2,7 @@ import Foundation
 import NIOCore
 import NIOPosix
 import NIOSSH
+import os
 
 /// Connection parameters for an SSH session.
 struct SSHConnection: Identifiable {
@@ -36,6 +37,10 @@ final class SSHSession: TerminalSession {
     private var childChannel: Channel?
     private var ptyHandler: PTYChannelHandler?
     private var keepalive: SSHKeepalive?
+    /// Guards the single close report. Only ever touched on the group's one
+    /// event loop, which both the parent and the child channels share.
+    private var reportedClose = false
+    private let log = Logger(subsystem: "io.github.madeye.gterm", category: "SSHSession")
 
     private var forwardManager: PortForwardManager?
     private let forwards: [PortForward]
@@ -243,6 +248,12 @@ final class SSHSession: TerminalSession {
         // spurious death three minutes from now.
         keepalive?.stop()
         keepalive = nil
+        // Report the first cause only. Closing the parent channel tears down the
+        // PTY child, which calls back in here with no error, and `notify` has no
+        // precedence: a later `.closed` would overwrite the `.failed` that
+        // explains the disconnect and would dismiss the terminal screen.
+        guard !reportedClose else { return }
+        reportedClose = true
         if let error {
             lifecycle.notify(.failed(Self.describe(error)))
         } else {
@@ -250,12 +261,21 @@ final class SSHSession: TerminalSession {
         }
     }
 
-    /// Called from the event loop when four consecutive keepalives go
-    /// unanswered, which is 180 seconds after the last proven round-trip.
+    /// Called on the event loop when four consecutive keepalives go unanswered,
+    /// which is 180 seconds after the last proven round-trip.
     ///
-    /// TODO: decide what a dead verdict should do. See the notes in the pull
-    /// request description — this is the one behavioral choice in the change.
+    /// The verdict is reported as session state, which the terminal screen shows
+    /// as an inline status message, and written to the log for diagnosis. It
+    /// raises no alert: the user did nothing wrong, and the session is already
+    /// gone by the time this runs.
     private func handleKeepaliveDeath() {
+        let window = Int(KeepaliveTracker.defaultInterval) * (KeepaliveTracker.defaultMissLimit + 1)
+        let host = "\(connection.host):\(connection.port)"
+        log.error("keepalive unanswered for \(window)s on \(host, privacy: .private); closing")
+        handleChannelClose(SSHKeepaliveError.unanswered)
+        // Release the socket. Without this a black-hole connection, the case the
+        // counter exists to catch, would hold its file descriptor open.
+        channel?.close(promise: nil)
     }
 
     // MARK: TerminalSurfaceViewDelegate

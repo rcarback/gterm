@@ -3,9 +3,19 @@ import NIOCore
 import NIOSSH
 
 /// Errors raised by the keepalive timer itself.
-enum SSHKeepaliveError: Error {
+enum SSHKeepaliveError: Error, LocalizedError {
     /// The parent channel was already inactive when a keepalive came due.
     case notConnected
+
+    /// Enough consecutive probes went unanswered to call the connection gone.
+    case unanswered
+
+    var errorDescription: String? {
+        switch self {
+        case .notConnected: return "Not connected."
+        case .unanswered: return "Connection stopped responding."
+        }
+    }
 }
 
 /// Probes an authenticated SSH connection at a fixed interval and reports the
