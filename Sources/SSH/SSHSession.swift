@@ -2,6 +2,7 @@ import Foundation
 import NIOCore
 import NIOPosix
 import NIOSSH
+import os
 
 /// Connection parameters for an SSH session.
 struct SSHConnection: Identifiable {
@@ -35,6 +36,11 @@ final class SSHSession: TerminalSession {
     private var channel: Channel?
     private var childChannel: Channel?
     private var ptyHandler: PTYChannelHandler?
+    private var keepalive: SSHKeepalive?
+    /// Guards the single close report. Only ever touched on the group's one
+    /// event loop, which both the parent and the child channels share.
+    private var reportedClose = false
+    private let log = Logger(subsystem: "io.github.madeye.gterm", category: "SSHSession")
 
     private var forwardManager: PortForwardManager?
     private let forwards: [PortForward]
@@ -119,6 +125,8 @@ final class SSHSession: TerminalSession {
 
     func stop() {
         lifecycle.setStopped(true)
+        keepalive?.stop()
+        keepalive = nil
         let group = self.group
         // Close port-forward listeners + tunnels FIRST and wait for them to be
         // fully released, THEN close the channels and shut the group down. Shutting
@@ -199,6 +207,14 @@ final class SSHSession: TerminalSession {
                         )
                         self.forwardManager = mgr
                         for f in self.forwards where f.autoStart { mgr.start(f) }
+                        // Probe the parent connection, not the shell child
+                        // channel: the transport is what goes idle and what a
+                        // router or `ClientAliveInterval` reaps.
+                        let keepalive = SSHKeepalive(channel: channel) { [weak self] in
+                            self?.handleKeepaliveDeath()
+                        }
+                        self.keepalive = keepalive
+                        keepalive.start()
                         self.lifecycle.notify(.connected)
                     }
                 }
@@ -228,11 +244,38 @@ final class SSHSession: TerminalSession {
     }
 
     private func handleChannelClose(_ error: Error?) {
+        // The connection is over: stop the timer before it can report a second,
+        // spurious death three minutes from now.
+        keepalive?.stop()
+        keepalive = nil
+        // Report the first cause only. Closing the parent channel tears down the
+        // PTY child, which calls back in here with no error, and `notify` has no
+        // precedence: a later `.closed` would overwrite the `.failed` that
+        // explains the disconnect and would dismiss the terminal screen.
+        guard !reportedClose else { return }
+        reportedClose = true
         if let error {
             lifecycle.notify(.failed(Self.describe(error)))
         } else {
             lifecycle.notify(.closed)
         }
+    }
+
+    /// Called on the event loop when four consecutive keepalives go unanswered,
+    /// which is 180 seconds after the last proven round-trip.
+    ///
+    /// The verdict is reported as session state, which the terminal screen shows
+    /// as an inline status message, and written to the log for diagnosis. It
+    /// raises no alert: the user did nothing wrong, and the session is already
+    /// gone by the time this runs.
+    private func handleKeepaliveDeath() {
+        let window = Int(KeepaliveTracker.defaultInterval) * (KeepaliveTracker.defaultMissLimit + 1)
+        let host = "\(connection.host):\(connection.port)"
+        log.error("keepalive unanswered for \(window)s on \(host, privacy: .private); closing")
+        handleChannelClose(SSHKeepaliveError.unanswered)
+        // Release the socket. Without this a black-hole connection, the case the
+        // counter exists to catch, would hold its file descriptor open.
+        channel?.close(promise: nil)
     }
 
     // MARK: TerminalSurfaceViewDelegate

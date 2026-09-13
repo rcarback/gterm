@@ -126,6 +126,7 @@ targets:
       - path: Sources/SSH/PTYChannelHandler.swift
       - path: Sources/SSH/SessionStateNotifier.swift
       - path: Sources/SSH/SSHPort.swift
+      - path: Sources/SSH/KeepaliveTracker.swift
       - path: Sources/Model/CommandHistory.swift
       - path: Sources/Model/HerdrSupport.swift
       - path: Sources/Model/ConnectionStore.swift
