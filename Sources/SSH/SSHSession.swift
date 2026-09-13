@@ -35,6 +35,7 @@ final class SSHSession: TerminalSession {
     private var channel: Channel?
     private var childChannel: Channel?
     private var ptyHandler: PTYChannelHandler?
+    private var keepalive: SSHKeepalive?
 
     private var forwardManager: PortForwardManager?
     private let forwards: [PortForward]
@@ -119,6 +120,8 @@ final class SSHSession: TerminalSession {
 
     func stop() {
         lifecycle.setStopped(true)
+        keepalive?.stop()
+        keepalive = nil
         let group = self.group
         // Close port-forward listeners + tunnels FIRST and wait for them to be
         // fully released, THEN close the channels and shut the group down. Shutting
@@ -199,6 +202,14 @@ final class SSHSession: TerminalSession {
                         )
                         self.forwardManager = mgr
                         for f in self.forwards where f.autoStart { mgr.start(f) }
+                        // Probe the parent connection, not the shell child
+                        // channel: the transport is what goes idle and what a
+                        // router or `ClientAliveInterval` reaps.
+                        let keepalive = SSHKeepalive(channel: channel) { [weak self] in
+                            self?.handleKeepaliveDeath()
+                        }
+                        self.keepalive = keepalive
+                        keepalive.start()
                         self.lifecycle.notify(.connected)
                     }
                 }
@@ -228,11 +239,23 @@ final class SSHSession: TerminalSession {
     }
 
     private func handleChannelClose(_ error: Error?) {
+        // The connection is over: stop the timer before it can report a second,
+        // spurious death three minutes from now.
+        keepalive?.stop()
+        keepalive = nil
         if let error {
             lifecycle.notify(.failed(Self.describe(error)))
         } else {
             lifecycle.notify(.closed)
         }
+    }
+
+    /// Called from the event loop when four consecutive keepalives go
+    /// unanswered, which is 180 seconds after the last proven round-trip.
+    ///
+    /// TODO: decide what a dead verdict should do. See the notes in the pull
+    /// request description — this is the one behavioral choice in the change.
+    private func handleKeepaliveDeath() {
     }
 
     // MARK: TerminalSurfaceViewDelegate
