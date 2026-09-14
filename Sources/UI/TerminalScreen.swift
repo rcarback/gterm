@@ -7,12 +7,6 @@ struct HostKeyPromptRequest {
     let decide: (Bool) -> Void
 }
 
-/// A URL tapped in the terminal. Wraps `URL` so it can drive a `fullScreenCover(item:)`.
-struct TappedURL: Identifiable {
-    let id = UUID()
-    let url: URL
-}
-
 /// Full-screen terminal for an active SSH connection, with a slim status bar
 /// and a close button. The session itself is owned by `SessionManager`, so
 /// leaving this screen detaches from — but does not disconnect — the session.
@@ -26,8 +20,6 @@ struct TerminalScreen: View {
     @State private var showingScreen = false
     @State private var showingForwards = false
     @State private var browsing: PortForward?
-    /// A URL tapped in the terminal, opened in the in-app browser.
-    @State private var linkURL: TappedURL?
 
     private var connection: SSHConnection { session.connection }
 
@@ -41,9 +33,6 @@ struct TerminalScreen: View {
         VStack(spacing: 0) {
             statusBar
             TerminalView(surface: session.surface)
-        }
-        .onAppear {
-            session.surface.onOpenURL = { url in linkURL = TappedURL(url: url) }
         }
         .sheet(isPresented: $showingAICommands) {
             AICommandSheet(
@@ -70,9 +59,6 @@ struct TerminalScreen: View {
             if let url = f.localURL {
                 BrowserScreen(initialURL: url) { browsing = nil }
             }
-        }
-        .fullScreenCover(item: $linkURL) { tapped in
-            BrowserScreen(initialURL: tapped.url) { linkURL = nil }
         }
         .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)

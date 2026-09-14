@@ -5,8 +5,6 @@ final class ScreenAttachment: ObservableObject {
     @Published private(set) var surface: TerminalSurfaceView?
     @Published private(set) var scrollingHistory = false
     @Published private(set) var controlsHidden = false
-    /// A URL tapped in the Screen terminal, opened in the in-app browser.
-    @Published var linkURL: TappedURL?
     private var terminal: ScreenTerminal?
     private var scrollInput = ScreenScrollInput()
     private var pendingScroll: CGFloat = 0
@@ -40,7 +38,6 @@ final class ScreenAttachment: ObservableObject {
             self.surface?.showKeyboardIfNeeded()
             return true
         }
-        view.onOpenURL = { [weak self] url in self?.linkURL = TappedURL(url: url) }
     }
 
     func open(command: String, ssh: SSHSession, ghostty: Ghostty.App) async throws {
@@ -293,11 +290,8 @@ struct ScreenModeView: View {
             if state != .connected { controller.connectionInterrupted() }
         }
         .onDisappear {
-            // A browser cover makes this view disappear without the user leaving
-            // Screen mode. Detaching then would end the session they are still
-            // reading a tapped link from.
             if scenePhase != .active { controller.connectionInterrupted() }
-            else if browsing == nil, attachment.linkURL == nil { controller.detach() }
+            else if browsing == nil { controller.detach() }
         }
         .sheet(isPresented: $showWindowList, onDismiss: {
             _ = attachment.surface?.becomeFirstResponder()
@@ -335,9 +329,6 @@ struct ScreenModeView: View {
             if let url = forward.localURL {
                 BrowserScreen(initialURL: url) { browsing = nil }
             }
-        }
-        .fullScreenCover(item: $attachment.linkURL) { tapped in
-            BrowserScreen(initialURL: tapped.url) { attachment.linkURL = nil }
         }
         .alert(editWindow == nil ? "Add window" : "Rename window", isPresented: $showNamePrompt) {
             TextField("Window name", text: $windowName)
