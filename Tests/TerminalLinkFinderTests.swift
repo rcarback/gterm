@@ -1,86 +1,98 @@
 import XCTest
 
-/// The finder works from two strings the surface can always read, whatever the
-/// remote program is doing: the whole viewport (soft-wrapped rows already
-/// joined) and the single row under the tap.
+/// The finder works from the grid itself: one string per row, each the full
+/// width, so a column index means the same thing on every row.
 final class TerminalLinkFinderTests: XCTestCase {
+    private func url(_ rows: [String], columns: Int, row: Int, column: Int) -> String? {
+        TerminalLinkFinder.url(rows: rows, columns: columns, tapRow: row, tapColumn: column)?
+            .absoluteString
+    }
+
     func testFindsTheURLUnderTheTap() {
-        let row = "see https://example.com/docs for details"
-        XCTAssertEqual(
-            TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 10)?.absoluteString,
-            "https://example.com/docs"
-        )
+        let rows = ["see https://example.com/docs for details"]
+        XCTAssertEqual(url(rows, columns: 80, row: 0, column: 10), "https://example.com/docs")
     }
 
     func testTapOutsideTheURLFindsNothing() {
-        let row = "see https://example.com/docs for details"
-        XCTAssertNil(TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 1))
-    }
-
-    /// A tap on the continuation of a wrapped URL must open the whole URL. The
-    /// viewport read carries it joined; the tapped row holds only the tail.
-    func testTapOnWrappedContinuationReturnsTheWholeURL() {
-        let whole = "https://example.com/" + String(repeating: "a", count: 40)
-        let tail = String(repeating: "a", count: 20)
-        XCTAssertEqual(
-            TerminalLinkFinder.url(visibleText: whole, rowText: tail, tapColumn: 5)?.absoluteString,
-            whole
-        )
-    }
-
-    func testPicksTheURLContainingTheTappedToken() {
-        let row = "https://alpha.example/one https://beta.example/two"
-        XCTAssertEqual(
-            TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 30)?.absoluteString,
-            "https://beta.example/two"
-        )
+        let rows = ["see https://example.com/docs for details"]
+        XCTAssertNil(url(rows, columns: 80, row: 0, column: 1))
     }
 
     func testTapOnWhitespaceFindsNothing() {
-        let row = "see https://example.com/docs for details"
-        XCTAssertNil(TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 3))
+        let rows = ["see https://example.com/docs for details"]
+        XCTAssertNil(url(rows, columns: 80, row: 0, column: 3))
+    }
+
+    /// GNU Screen redraws with real line breaks rather than soft-wrapping, so a
+    /// URL across rows is only recoverable by joining a row that reaches its
+    /// last column. "https://example.com/" is exactly 20 characters.
+    func testJoinsARowThatReachesTheLastColumn() {
+        let rows = ["https://example.com/", "docs/page"]
+        XCTAssertEqual(url(rows, columns: 20, row: 1, column: 2), "https://example.com/docs/page")
+    }
+
+    func testTappingTheFirstRowOfAWrappedURLAlsoOpensTheWhole() {
+        let rows = ["https://example.com/", "docs/page"]
+        XCTAssertEqual(url(rows, columns: 20, row: 0, column: 5), "https://example.com/docs/page")
+    }
+
+    func testJoinsAcrossThreeRows() {
+        let rows = ["https://ex", "ample.com/", "docs"]
+        XCTAssertEqual(url(rows, columns: 10, row: 2, column: 1), "https://example.com/docs")
+    }
+
+    /// A row that stops short of the last column ended on its own, so the next
+    /// row is unrelated text and must not be pulled in.
+    func testDoesNotJoinARowThatEndsEarly() {
+        let rows = ["https://example.com", "docs"]
+        XCTAssertNil(url(rows, columns: 30, row: 1, column: 1))
+    }
+
+    func testShortRowKeepsItsOwnURLIntact() {
+        let rows = ["https://example.com", "docs"]
+        XCTAssertEqual(url(rows, columns: 30, row: 0, column: 9), "https://example.com")
+    }
+
+    /// A full-width read pads with blanks; that padding must not count toward
+    /// filling the row.
+    func testTrailingBlankPaddingDoesNotCountAsFilled() {
+        let rows = ["https://example.com" + String(repeating: " ", count: 11), "docs"]
+        XCTAssertNil(url(rows, columns: 30, row: 1, column: 1))
+    }
+
+    func testPicksTheURLContainingTheTappedToken() {
+        let rows = ["https://alpha.example/one https://beta.example/two"]
+        XCTAssertEqual(url(rows, columns: 80, row: 0, column: 30), "https://beta.example/two")
     }
 
     func testTapOnPlainTextFindsNothing() {
-        let row = "no links on this line at all"
-        XCTAssertNil(TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 5))
+        XCTAssertNil(url(["no links on this line at all"], columns: 80, row: 0, column: 5))
     }
 
-    /// Sentence punctuation is common right after a URL and is not part of it.
     func testTrailingSentencePunctuationIsExcluded() {
-        let row = "visit https://example.com/docs."
-        XCTAssertEqual(
-            TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 12)?.absoluteString,
-            "https://example.com/docs"
-        )
+        let rows = ["visit https://example.com/docs."]
+        XCTAssertEqual(url(rows, columns: 80, row: 0, column: 12), "https://example.com/docs")
     }
 
-    /// A URL wrapped in parentheses keeps its own balanced parens but not the
-    /// surrounding ones.
     func testSurroundingParenthesesAreExcluded() {
-        let row = "(https://example.com/a)"
-        XCTAssertEqual(
-            TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 5)?.absoluteString,
-            "https://example.com/a"
-        )
+        XCTAssertEqual(url(["(https://example.com/a)"], columns: 80, row: 0, column: 5),
+                       "https://example.com/a")
     }
 
     func testSchemelessTextIsNotTreatedAsALink() {
-        let row = "example.com/docs"
-        XCTAssertNil(TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 3))
+        XCTAssertNil(url(["example.com/docs"], columns: 80, row: 0, column: 3))
     }
 
-    func testColumnBeyondTheRowFindsNothing() {
-        let row = "https://example.com"
-        XCTAssertNil(TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 999))
-        XCTAssertNil(TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: -1))
+    func testOutOfRangeTapsFindNothing() {
+        let rows = ["https://example.com"]
+        XCTAssertNil(url(rows, columns: 80, row: 0, column: 999))
+        XCTAssertNil(url(rows, columns: 80, row: 0, column: -1))
+        XCTAssertNil(url(rows, columns: 80, row: 5, column: 1))
+        XCTAssertNil(url([], columns: 80, row: 0, column: 0))
     }
 
     func testNonHTTPSchemesAreFound() {
-        let row = "mail me at mailto:someone@example.com ok"
-        XCTAssertEqual(
-            TerminalLinkFinder.url(visibleText: row, rowText: row, tapColumn: 20)?.absoluteString,
-            "mailto:someone@example.com"
-        )
+        let rows = ["mail me at mailto:someone@example.com ok"]
+        XCTAssertEqual(url(rows, columns: 80, row: 0, column: 20), "mailto:someone@example.com")
     }
 }

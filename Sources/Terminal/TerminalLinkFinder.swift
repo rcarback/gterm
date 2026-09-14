@@ -11,6 +11,11 @@ import Foundation
 /// works in both cases — and because it sends nothing to the remote, it is safe
 /// to run before the tap is offered to anything else.
 ///
+/// Rows are joined when one reaches its last column. That is the only wrap
+/// signal left once text is on the grid: a terminal soft wrap and a program
+/// that re-wraps text itself, as GNU Screen does when it redraws, are
+/// indistinguishable afterwards, and both fill the row they continue from.
+///
 /// Foundation only, so the whole search is covered by fast unit tests.
 enum TerminalLinkFinder {
     /// Schemes libghostty highlights, from `ghostty/src/config/url.zig`.
@@ -27,34 +32,46 @@ enum TerminalLinkFinder {
     /// Far more often sentence punctuation than part of the address.
     private static let trailingNoise = Set(".,;:!?'\"")
 
-    /// The URL under `tapColumn`, or nil when the tap is not on one.
+    /// The URL covering `tapColumn` on `tapRow`, or nil when the tap is not on
+    /// one.
     ///
     /// - Parameters:
-    ///   - visibleText: the whole viewport, read non-rectangularly so ghostty
-    ///     has already joined soft-wrapped rows. A URL split across rows is
-    ///     whole here even though no single row holds it.
-    ///   - rowText: just the row under the tap, which is what gives the tap a
-    ///     column to resolve against.
-    static func url(visibleText: String, rowText: String, tapColumn: Int) -> URL? {
-        guard let token = token(in: rowText, at: tapColumn) else { return nil }
-        let rowMatches = matches(in: rowText)
-        if let hit = rowMatches.first(where: { $0.start <= tapColumn && tapColumn <= $0.end }) {
-            // A match touching either edge of the row may be one piece of a URL
-            // that wrapped. The viewport copy carries the whole thing.
-            let wrapped = hit.start == 0 || hit.end == Array(rowText).count - 1
-            if wrapped,
-               let whole = matches(in: visibleText).first(where: { $0.text.contains(hit.text) }),
-               whole.text != hit.text {
-                return url(from: whole.text)
-            }
-            return url(from: hit.text)
-        }
-        // No scheme on this row at all. The tap may be on the continuation of a
-        // URL that began further up, which only ever starts at column zero.
-        guard token.start == 0,
-              let whole = matches(in: visibleText).first(where: { $0.text.contains(token.text) })
+    ///   - rows: the viewport, one entry per row, each read across the full
+    ///     width so a column index means the same thing in every row.
+    ///   - columns: the grid width, which is what makes a row count as filled.
+    static func url(rows: [String], columns: Int, tapRow: Int, tapColumn: Int) -> URL? {
+        guard columns > 0, tapRow >= 0, tapRow < rows.count, tapColumn >= 0, tapColumn < columns
         else { return nil }
-        return url(from: whole.text)
+        let tapped = content(rows[tapRow])
+        guard tapColumn < tapped.count, !Array(tapped)[tapColumn].isWhitespace else { return nil }
+
+        // Walk out over every row that continues into the next one.
+        var first = tapRow
+        while first > 0, fills(rows[first - 1], columns: columns) { first -= 1 }
+        var last = tapRow
+        while last < rows.count - 1, fills(rows[last], columns: columns) { last += 1 }
+
+        var joined = ""
+        var offset = 0
+        for row in first...last {
+            if row == tapRow { offset = joined.count + tapColumn }
+            joined += content(rows[row])
+        }
+        guard let hit = matches(in: joined).first(where: { $0.start <= offset && offset <= $0.end })
+        else { return nil }
+        return URL(string: trimmed(hit.text))
+    }
+
+    /// A row continues into the next one when its text reaches the last column.
+    private static func fills(_ row: String, columns: Int) -> Bool {
+        content(row).count >= columns
+    }
+
+    /// Row text without the trailing blanks a full-width read pads it with.
+    private static func content(_ row: String) -> String {
+        var text = row
+        while let last = text.last, last.isWhitespace { text.removeLast() }
+        return text
     }
 
     private struct Match {
@@ -84,29 +101,13 @@ enum TerminalLinkFinder {
     private static func starts(_ chars: [Character], at index: Int, with scheme: String) -> Bool {
         let scheme = Array(scheme)
         guard index + scheme.count <= chars.count else { return false }
-        for offset in 0..<scheme.count where Character(chars[index + offset].lowercased()) != scheme[offset] {
+        for offset in 0..<scheme.count
+        where Character(chars[index + offset].lowercased()) != scheme[offset] {
             return false
         }
         return true
     }
 
-    /// The run of non-space characters covering `column`.
-    private static func token(in row: String, at column: Int) -> (text: String, start: Int)? {
-        let chars = Array(row)
-        guard column >= 0, column < chars.count, !chars[column].isWhitespace else { return nil }
-        var start = column
-        var end = column
-        while start > 0, !chars[start - 1].isWhitespace { start -= 1 }
-        while end + 1 < chars.count, !chars[end + 1].isWhitespace { end += 1 }
-        return (String(chars[start...end]), start)
-    }
-
-    private static func url(from candidate: String) -> URL? {
-        URL(string: trimmed(candidate))
-    }
-
-    /// Drop trailing punctuation, and a closing parenthesis that has no opener
-    /// inside the match — the "(https://example.com/a)" case.
     private static func trimmed(_ candidate: String) -> String {
         var text = candidate
         while let last = text.last {

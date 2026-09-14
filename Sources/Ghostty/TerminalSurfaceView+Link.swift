@@ -69,9 +69,12 @@ extension TerminalSurfaceView {
     }
 
     /// The URL under a tap, read from the grid rather than from libghostty's
-    /// hover state. The viewport is read non-rectangularly so ghostty joins
-    /// soft-wrapped rows, which is what lets a tap on a continuation row open
-    /// the whole address.
+    /// hover state.
+    ///
+    /// Every row is read separately and at full width so the finder can tell
+    /// which rows continue into the next. A joined read would not do: GNU
+    /// Screen re-wraps text itself, so inside a Screen session the rows of one
+    /// URL are separated by real line breaks and ghostty joins nothing.
     private func urlUnderTap(_ loc: CGPoint, surface: ghostty_surface_t) -> URL? {
         let size = ghostty_surface_size(surface)
         guard size.columns > 0, size.rows > 0, size.cell_width_px > 0, size.cell_height_px > 0 else {
@@ -80,27 +83,33 @@ extension TerminalSurfaceView {
         let scale = Double(window?.screen.scale ?? UIScreen.main.scale)
         let column = Int(floor(Double(loc.x) / (Double(size.cell_width_px) / scale)))
         let row = Int(floor(Double(loc.y) / (Double(size.cell_height_px) / scale)))
-        guard column >= 0, row >= 0, row < Int(size.rows) else { return nil }
+        guard column >= 0, column < Int(size.columns), row >= 0, row < Int(size.rows) else {
+            return nil
+        }
+        let rows = (0..<Int(size.rows)).map { readRow($0, surface: surface, columns: Int(size.columns)) }
+        return TerminalLinkFinder.url(
+            rows: rows, columns: Int(size.columns), tapRow: row, tapColumn: column
+        )
+    }
+
+    /// One row of the viewport, read across its full width.
+    private func readRow(_ row: Int, surface: ghostty_surface_t, columns: Int) -> String {
         let range = ghostty_selection_s(
             top_left: ghostty_point_s(
                 tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_EXACT, x: 0, y: UInt32(row)
             ),
             bottom_right: ghostty_point_s(
                 tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_EXACT,
-                x: UInt32(size.columns - 1), y: UInt32(row)
+                x: UInt32(columns - 1), y: UInt32(row)
             ),
             rectangle: true
         )
         var text = ghostty_text_s()
-        guard ghostty_surface_read_text(surface, range, &text) else { return nil }
+        guard ghostty_surface_read_text(surface, range, &text) else { return "" }
         defer { ghostty_surface_free_text(surface, &text) }
-        let rowText = text.text.map {
+        let line = text.text.map {
             String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(text.text_len)), as: UTF8.self)
         } ?? ""
-        return TerminalLinkFinder.url(
-            visibleText: readVisibleText(),
-            rowText: rowText.trimmingCharacters(in: .newlines),
-            tapColumn: column
-        )
+        return line.trimmingCharacters(in: .newlines)
     }
 }
