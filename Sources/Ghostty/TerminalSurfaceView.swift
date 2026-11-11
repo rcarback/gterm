@@ -126,15 +126,29 @@ final class TerminalSurfaceView: UIView {
     /// or Zoom key resyncs.
     private var herdrPaneZoomed = false
 
-    /// Called when the user taps a URL in the terminal; the SwiftUI layer routes
-    /// it to the in-app browser. Set by the hosting view.
+    /// Test seam for observing opened links. The app leaves this nil, so there
+    /// is no per-instance wiring to forget — every surface opens links the same
+    /// way whether it belongs to the primary terminal or to Screen mode.
     var onOpenURL: ((URL) -> Void)?
 
     /// Invoked from libghostty's OPEN_URL action (via Ghostty.App) when a clicked
     /// link is followed. Parses and forwards the URL on the main thread.
     func didRequestOpenURL(_ string: String) {
         guard let url = URL(string: string) else { return }
-        onOpenURL?(url)
+        openURL(url)
+    }
+
+    /// Hand a tapped link to the system browser. A URL printed by a remote shell
+    /// names a host reachable from the phone, or a loopback port on the remote
+    /// that the phone cannot reach at all, so there is nothing for the in-app
+    /// browser to add. That browser stays for port forwards, whose URLs point at
+    /// a listener running inside this process.
+    func openURL(_ url: URL) {
+        if let onOpenURL {
+            onOpenURL(url)
+            return
+        }
+        UIApplication.shared.open(url)
     }
 
     // MARK: Selection / clipboard gesture state (see TerminalSurfaceView+Selection)
@@ -152,8 +166,9 @@ final class TerminalSurfaceView: UIView {
     /// only forwards the incremental delta.
     var lastScrollTranslationY: CGFloat = 0
 
-    /// Overrides touch-wheel input when the host supplies remote scrollback.
-    var onTouchScroll: ((CGFloat) -> Void)?
+    /// Lets the host supply remote scrollback for a drag. Returning false hands
+    /// the drag back to libghostty's wheel handling.
+    var onTouchScroll: ((CGFloat) -> Bool)?
     var onBeforeInput: (() -> Void)?
     var canTapToMoveCursor: (() -> Bool)?
     var onTap: (() -> Bool)?

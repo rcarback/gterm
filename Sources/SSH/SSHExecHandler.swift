@@ -12,6 +12,7 @@ enum SSHExecError: Error, Equatable, LocalizedError {
     case remoteSignal(name: String, message: String)
     case outputLimitExceeded(limit: Int)
     case timedOut
+    case keepaliveTimedOut
     case cancelled
     case transportError(String)
 
@@ -38,6 +39,8 @@ enum SSHExecError: Error, Equatable, LocalizedError {
             return "The SSH command returned more than \(limit) bytes."
         case .timedOut:
             return "The SSH command timed out."
+        case .keepaliveTimedOut:
+            return "The SSH connection stopped responding."
         case .cancelled:
             return "The SSH command was cancelled."
         case .transportError(let message):

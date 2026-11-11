@@ -58,6 +58,13 @@ This count limits scrolling to stored output.
 Turning on history in Screen retains future output.
 It cannot recover unsaved output.
 
+Codex and grok handle the mouse and scroll their own view.
+Other full-screen programs can do the same.
+While such a program runs, a drag sends it mouse wheel input
+and does not start copy mode.
+A drag that starts in copy mode stays in copy mode.
+Use **Browse Screen history** to read Screen's history in these programs.
+
 When the keyboard opens, the view scrolls up only enough to keep the cursor
 and the following row clear of the keyboard. Earlier output stays in view.
 Closing the keyboard restores the full view.
@@ -67,8 +74,10 @@ Hold Backspace on the system keyboard to keep deleting text. Release it to stop.
 Tap **alt**, then Backspace on the system keyboard, to send the word-delete shortcut.
 The remote app controls how this shortcut works. Alt clears after the key press.
 
+Tap a link to open it in Safari. This also works in copy mode.
+A link that wraps onto the next row opens in full.
 Tap another position on the cursor's current row to move left or right.
-Links and applications that handle mouse input take priority.
+Applications that handle mouse input receive the tap instead.
 Hold a word to highlight it, then release your finger.
 Drag the native iOS selection handles to extend or shorten the highlight.
 Choose **Copy** from the system menu.
@@ -110,3 +119,23 @@ xcodebuild -project gterm.xcodeproj -scheme ScreenValidation \
 Tests cover window data, stale state, history, and failed SSH commands.
 On the phone, check the keyboard, tabs, bells, and history.
 Then detach and check that the shell still works.
+
+## Backgrounding and session survival
+
+iOS suspends an app shortly after you leave it. A suspended app runs no code,
+so it cannot answer the server and cannot send keepalives.
+
+gterm handles this in three parts:
+
+1. **Short absences.** When you leave the app, gterm asks iOS to defer
+   suspension. The grant runs about 30 seconds. Inside that window the SSH
+   session stays connected, and returning to the app costs nothing.
+2. **Idle sessions.** A connected session sends a keepalive every 45 seconds.
+   This keeps address-translation state alive and stops a server with
+   `ClientAliveInterval` set from reaping a session you are looking at.
+3. **Long absences.** Once iOS suspends the app, the connection drops.
+   gterm detects the loss when you return and reconnects.
+
+For work that must survive a long absence, run it under Screen. The remote
+session keeps running while your phone is asleep. After the reconnect, gterm
+reattaches to it. Turn on **Attach to Screen** for the host.

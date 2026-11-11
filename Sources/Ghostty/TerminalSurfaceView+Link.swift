@@ -25,10 +25,19 @@ extension TerminalSurfaceView {
 
     @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let surface = ghosttySurface else { return }
+        let loc = gesture.location(in: self)
+        // Resolve the link from the grid text before anything else can consume
+        // the tap. Screen's copy mode swallows taps through `onTap`, and a
+        // program that turns on mouse reporting stops libghostty tracking links
+        // at all, so neither path can be relied on. Reading text sends nothing
+        // to the remote, which is what makes it safe to try first.
+        if let url = urlUnderTap(loc, surface: surface) {
+            openURL(url)
+            return
+        }
         if onTap?() == true { return }
         // A tap is also the affordance for re-summoning a dismissed keyboard.
         showKeyboardIfNeeded()
-        let loc = gesture.location(in: self)
         switch HerdrSupport.tapDecision(attachHerdr: attachHerdr, x: Double(loc.x), y: Double(loc.y)) {
         case .mouseLeftClick(let x, let y):
             // Unmodified left press+release at the tap so Herdr (and other
@@ -57,5 +66,50 @@ extension TerminalSurfaceView {
             ) else { return }
             for _ in 0..<abs(steps) { sendKey(steps < 0 ? .left : .right) }
         }
+    }
+
+    /// The URL under a tap, read from the grid rather than from libghostty's
+    /// hover state.
+    ///
+    /// Every row is read separately and at full width so the finder can tell
+    /// which rows continue into the next. A joined read would not do: GNU
+    /// Screen re-wraps text itself, so inside a Screen session the rows of one
+    /// URL are separated by real line breaks and ghostty joins nothing.
+    private func urlUnderTap(_ loc: CGPoint, surface: ghostty_surface_t) -> URL? {
+        let size = ghostty_surface_size(surface)
+        guard size.columns > 0, size.rows > 0, size.cell_width_px > 0, size.cell_height_px > 0 else {
+            return nil
+        }
+        let scale = Double(window?.screen.scale ?? UIScreen.main.scale)
+        let column = Int(floor(Double(loc.x) / (Double(size.cell_width_px) / scale)))
+        let row = Int(floor(Double(loc.y) / (Double(size.cell_height_px) / scale)))
+        guard column >= 0, column < Int(size.columns), row >= 0, row < Int(size.rows) else {
+            return nil
+        }
+        let rows = (0..<Int(size.rows)).map { readRow($0, surface: surface, columns: Int(size.columns)) }
+        return TerminalLinkFinder.url(
+            rows: rows, columns: Int(size.columns), tapRow: row, tapColumn: column
+        )
+    }
+
+    /// One row of the viewport, read across its full width.
+    private func readRow(_ row: Int, surface: ghostty_surface_t, columns: Int) -> String {
+        let range = ghostty_selection_s(
+            top_left: ghostty_point_s(
+                tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_EXACT, x: 0, y: UInt32(row)
+            ),
+            bottom_right: ghostty_point_s(
+                tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_EXACT,
+                x: UInt32(columns - 1), y: UInt32(row)
+            ),
+            rectangle: true
+        )
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_text(surface, range, &text) else { return "" }
+        defer { ghostty_surface_free_text(surface, &text) }
+        let line = text.text.map {
+            String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(text.text_len)), as: UTF8.self)
+        } ?? ""
+        return line.trimmingCharacters(in: .newlines)
     }
 }

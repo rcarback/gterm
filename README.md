@@ -17,6 +17,7 @@ connection via a custom **passthru IO backend** added to libghostty. See
 - ✅ Lean Swift layer over libghostty (app, surface view, input)
 - ✅ SSH transport (swift-nio-ssh): password auth, PTY shell, window-change
 - ✅ Custom on-screen keyboard (esc/ctrl/alt/tab/arrows/symbols, sticky mods)
+- ✅ Keepalives plus a background grace period, with Screen for longer absences ([details](docs/gnu-screen.md#backgrounding-and-session-survival))
 - ✅ Saved connections (Keychain passwords) + trust-on-first-use host keys
 - ✅ ProxyJump-style routing through saved jump hosts, including chained jumps
 - ✅ Public-key auth: generate Ed25519/RSA keys and import Ed25519/ECDSA/RSA

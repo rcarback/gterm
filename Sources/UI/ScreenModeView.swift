@@ -15,12 +15,20 @@ final class ScreenAttachment: ObservableObject {
     var readHistoryLimit: (() async throws -> Int)?
     var onScrollError: ((Error) -> Void)?
 
-    func open(command: String, ssh: SSHSession, ghostty: Ghostty.App) async throws {
-        generation += 1
-        let token = generation
-        let view = TerminalSurfaceView(ghostty: ghostty)
+    /// Wire a freshly built Screen surface. Surface callbacks are per-instance,
+    /// and Screen mode runs its own surface rather than `ActiveSession`'s, so
+    /// everything the primary terminal sets up has to be repeated here.
+    func configure(_ view: TerminalSurfaceView) {
         view.followsCursorWhileTyping = true
-        view.onTouchScroll = { [weak self] delta in self?.scroll(delta) }
+        view.onTouchScroll = { [weak self, weak view] delta in
+            guard let self else { return true }
+            // A program with mouse reporting on scrolls its own view, and
+            // Screen's history holds only a stale copy of its screen. Give it
+            // the wheel unless a history browse is already under way.
+            if !self.scrollingHistory, view?.isMouseCaptured == true { return false }
+            self.scroll(delta)
+            return true
+        }
         view.onBeforeInput = { [weak self] in self?.returnToLive() }
         view.onGeometryChange = { [weak self] in
             guard let self, self.scrollingHistory else { return }
@@ -38,6 +46,13 @@ final class ScreenAttachment: ObservableObject {
             self.surface?.showKeyboardIfNeeded()
             return true
         }
+    }
+
+    func open(command: String, ssh: SSHSession, ghostty: Ghostty.App) async throws {
+        generation += 1
+        let token = generation
+        let view = TerminalSurfaceView(ghostty: ghostty)
+        configure(view)
         let terminal = try await ssh.openScreenTerminal(command: command, view: view) { [weak self] error in
             guard let self, token == self.generation else { return }
             self.onClose?(error)
