@@ -58,6 +58,13 @@ This count limits scrolling to stored output.
 Turning on history in Screen retains future output.
 It cannot recover unsaved output.
 
+Codex and grok handle the mouse and scroll their own view.
+Other full-screen programs can do the same.
+While such a program runs, a drag sends it mouse wheel input
+and does not start copy mode.
+A drag that starts in copy mode stays in copy mode.
+Use **Browse Screen history** to read Screen's history in these programs.
+
 When the keyboard opens, the view scrolls up only enough to keep the cursor
 and the following row clear of the keyboard. Earlier output stays in view.
 Closing the keyboard restores the full view.
@@ -67,8 +74,10 @@ Hold Backspace on the system keyboard to keep deleting text. Release it to stop.
 Tap **alt**, then Backspace on the system keyboard, to send the word-delete shortcut.
 The remote app controls how this shortcut works. Alt clears after the key press.
 
+Tap a link to open it in Safari. This also works in copy mode.
+A link that wraps onto the next row opens in full.
 Tap another position on the cursor's current row to move left or right.
-Links and applications that handle mouse input take priority.
+Applications that handle mouse input receive the tap instead.
 Hold a word to highlight it, then release your finger.
 Drag the native iOS selection handles to extend or shorten the highlight.
 Choose **Copy** from the system menu.
