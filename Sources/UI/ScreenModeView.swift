@@ -20,7 +20,15 @@ final class ScreenAttachment: ObservableObject {
     /// everything the primary terminal sets up has to be repeated here.
     func configure(_ view: TerminalSurfaceView) {
         view.followsCursorWhileTyping = true
-        view.onTouchScroll = { [weak self] delta in self?.scroll(delta) }
+        view.onTouchScroll = { [weak self, weak view] delta in
+            guard let self else { return true }
+            // A program with mouse reporting on scrolls its own view, and
+            // Screen's history holds only a stale copy of its screen. Give it
+            // the wheel unless a history browse is already under way.
+            if !self.scrollingHistory, view?.isMouseCaptured == true { return false }
+            self.scroll(delta)
+            return true
+        }
         view.onBeforeInput = { [weak self] in self?.returnToLive() }
         view.onGeometryChange = { [weak self] in
             guard let self, self.scrollingHistory else { return }

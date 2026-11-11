@@ -166,8 +166,9 @@ final class TerminalSurfaceView: UIView {
     /// only forwards the incremental delta.
     var lastScrollTranslationY: CGFloat = 0
 
-    /// Overrides touch-wheel input when the host supplies remote scrollback.
-    var onTouchScroll: ((CGFloat) -> Void)?
+    /// Lets the host supply remote scrollback for a drag. Returning false hands
+    /// the drag back to libghostty's wheel handling.
+    var onTouchScroll: ((CGFloat) -> Bool)?
     var onBeforeInput: (() -> Void)?
     var canTapToMoveCursor: (() -> Bool)?
     var onTap: (() -> Bool)?
